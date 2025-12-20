@@ -1,0 +1,5 @@
+.env
+myVenv/
+__pycache__/
+ffmpeg/
+node_modules/
