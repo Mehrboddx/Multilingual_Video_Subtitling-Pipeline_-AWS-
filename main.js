@@ -184,33 +184,64 @@ ipcMain.handle('process-video', async (event, { inputPath, outputPath, sourceLan
       }
     });
 
-    // Handle subtitle save from editor
-    ipcMain.once('subtitles-saved', (event, subtitles) => {
-      if (waitingForEditorConfirmation && tempSubtitleFile) {
-        // Convert subtitles back to SRT format
+    // Handle subtitle save from editor (persistent handler)
+    const onSubtitlesSaved = (event, subtitles) => {
+      if (!waitingForEditorConfirmation) {
+        console.warn('Received subtitles-saved but not waiting for editor confirmation');
+        return;
+      }
+      if (!tempSubtitleFile) {
+        console.error('No temporary subtitle file path available');
+        return;
+      }
+
+      try {
         const srtContent = convertToSRT(subtitles);
         fs.writeFileSync(tempSubtitleFile, srtContent, 'utf-8');
-        
-        // Signal Python to continue
-        pythonProcess.stdin.write('EDITOR_CONFIRMED\n');
-        waitingForEditorConfirmation = false;
-        
-        // Close editor window
-        if (editorWindow) {
-          editorWindow.close();
-        }
-        
         mainWindow.webContents.send('processing-progress', 'Subtitle edits saved, continuing...');
+      } catch (err) {
+        console.error('Failed to write SRT file:', err);
+        mainWindow.webContents.send('processing-progress', 'Error saving subtitles file');
       }
-    });
 
-    // Handle editor cancellation
-    ipcMain.once('editor-cancelled', () => {
-      if (waitingForEditorConfirmation) {
-        pythonProcess.kill();
-        reject({ success: false, error: 'Processing cancelled by user' });
+      // Signal Python to continue
+      try {
+        pythonProcess.stdin.write('EDITOR_CONFIRMED\n');
+      } catch (err) {
+        console.error('Failed to notify Python process:', err);
       }
-    });
+      waitingForEditorConfirmation = false;
+
+      // Close editor window
+      if (editorWindow) {
+        editorWindow.close();
+      }
+
+      // Remove handlers to avoid leaks
+      ipcMain.removeListener('subtitles-saved', onSubtitlesSaved);
+      ipcMain.removeListener('editor-cancelled', onEditorCancelled);
+    };
+    ipcMain.on('subtitles-saved', onSubtitlesSaved);
+
+    // Handle editor cancellation (persistent handler)
+    const onEditorCancelled = () => {
+      if (!waitingForEditorConfirmation) {
+        console.warn('Received editor-cancelled but not waiting');
+        return;
+      }
+      waitingForEditorConfirmation = false;
+      try {
+        pythonProcess.kill();
+      } catch (err) {
+        console.error('Failed to kill Python process:', err);
+      }
+      reject({ success: false, error: 'Processing cancelled by user' });
+
+      // Remove handlers
+      ipcMain.removeListener('subtitles-saved', onSubtitlesSaved);
+      ipcMain.removeListener('editor-cancelled', onEditorCancelled);
+    };
+    ipcMain.on('editor-cancelled', onEditorCancelled);
 
     pythonProcess.stderr.on('data', (data) => {
       errorData += data.toString();

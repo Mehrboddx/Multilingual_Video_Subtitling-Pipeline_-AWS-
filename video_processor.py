@@ -50,6 +50,42 @@ def print_progress(message):
         message = message.decode('utf-8', errors='ignore')
     print(message, flush=True)
 
+def generate_success_message(output_video):
+    """Generate a poetic success message using Bedrock"""
+    try:
+        model_id = os.getenv('BEDROCK_MODEL_ID')
+
+
+        client = boto3.client('bedrock-runtime', region_name='eu-central-1')
+
+        prompt = (
+            f"Write a success message in a poetic way as this is my girlfriend's personal application. "
+            f"It should be complimenting her in a loving way. Keep it brief and sweet. "
+            f"The message is should for an example be like: 'Video subtitled for the loveliest girl in the world! Saved to: {output_video}' "
+        )
+
+        messages = [{"role": "user", "content": [{"text": prompt}]}]
+
+        resp = client.converse(
+            modelId=model_id,
+            messages=messages,
+            inferenceConfig={"maxTokens": 400, "temperature": 0.7}
+        )
+
+        output = resp.get('output', {})
+        msg = output.get('message', {})
+        content = msg.get('content', [])
+        text = content[0].get('text') if content else ""
+        
+        if text:
+            return f"{text}\n\nSaved to: {output_video}"
+        else:
+            return f"Your video has been translated successfully! Saved to: {output_video}"
+            
+    except Exception as e:
+        print_progress(f"Note: Could not generate custom message ({str(e)}), using default")
+        return f"Your video has been translated successfully! Saved to: {output_video}"
+
 def transcribe_to_translate_lang(transcribe_code):
     base_lang = transcribe_code.split('-')[0]
     if transcribe_code == 'zh-CN':
@@ -208,37 +244,8 @@ def main():
         
         transcription_text = transcript_data['results']['transcripts'][0]['transcript']
         
-        # Step 3: Translate
-        translate_source_lang = transcribe_to_translate_lang(origin_lang)
-        
-        translation_skipped = translate_source_lang == destination_lang
-        if translation_skipped:
-            print_progress("Source and target languages are the same, skipping translation...")
-            translated_text = transcription_text
-        else:
-            model_id = os.getenv('MODEL_ID', 'unset')
-            print_progress(f"Translating text to {destination_lang} using Bedrock model {model_id}...")
-            try:
-                translated_text = translate_with_bedrock(
-                    transcription_text,
-                    translate_source_lang,
-                    destination_lang
-                )
-            except Exception as bedrock_err:
-                print_progress(f"Bedrock translation failed, falling back to AWS Translate: {bedrock_err}")
-                translator = boto3.client('translate', region_name=region)
-                response = translator.translate_text(
-                    Text=transcription_text,
-                    SourceLanguageCode=translate_source_lang,
-                    TargetLanguageCode=destination_lang
-                )
-                translated_text = response.get('TranslatedText')
-        
-        # Translation complete - will be edited in the subtitle editor later
-        print_progress(f"Translation complete. Text length: {len(translated_text)} characters")
-        
-        # Step 4: Create initial subtitles with timestamps
-        print_progress("Creating subtitles with timestamps...")
+        # Step 3: Create subtitle segments with original timestamps first
+        print_progress("Creating subtitle segments from transcription...")
         items = transcript_data['results']['items']
 
         subtitles = []
@@ -289,40 +296,56 @@ def main():
         
         print_progress(f"Created {len(subtitles)} subtitle segments")
         
-        # Map translated text to subtitles
-        translated_words = translated_text.split()
-        words_per_subtitle = max(1, len(translated_words) // len(subtitles))
+        # Step 4: Translate text in one pass (faster than per-segment)
+        translate_source_lang = transcribe_to_translate_lang(origin_lang)
+        translation_skipped = translate_source_lang == destination_lang
         
-        subtitle_data = []
-        start_idx = 0
-        for i, subtitle in enumerate(subtitles):
-            if translation_skipped:
-                text = subtitle['words']
-            else:
-                end_idx = min(start_idx + words_per_subtitle, len(translated_words))
-                if i == len(subtitles) - 1:
-                    end_idx = len(translated_words)
-                text = ' '.join(translated_words[start_idx:end_idx])
-                start_idx = end_idx
+        if translation_skipped:
+            print_progress("Source and target languages are the same, skipping translation...")
+            translated_text = '\n'.join([s['words'] for s in subtitles])
+        else:
+            model_id = os.getenv('MODEL_ID', 'unset')
+            # Combine segments with newlines to preserve structure
+            full_text = '\n'.join([s['words'] for s in subtitles])
+            print_progress(f"Translating text to {destination_lang} using Bedrock model {model_id}...")
             
-            subtitle_data.append({
+            try:
+                translated_text = translate_with_bedrock(
+                    full_text,
+                    translate_source_lang,
+                    destination_lang
+                )
+            except Exception as bedrock_err:
+                print_progress(f"Bedrock translation failed, falling back to AWS Translate: {bedrock_err}")
+                translator = boto3.client('translate', region_name=region)
+                response = translator.translate_text(
+                    Text=full_text,
+                    SourceLanguageCode=translate_source_lang,
+                    TargetLanguageCode=destination_lang
+                )
+                translated_text = response.get('TranslatedText')
+        
+        print_progress("Translation complete. Preparing preview...")
+        
+        # Prepare subtitle data for editor
+        subtitle_data_for_editor = []
+        translated_segments = translated_text.split('\n')
+        for i, subtitle in enumerate(subtitles):
+            if i < len(translated_segments):
+                text = translated_segments[i].strip()
+            else:
+                text = subtitle['words']
+            
+            subtitle_data_for_editor.append({
                 'text': text,
                 'start': float(subtitle['start']),
                 'end': float(subtitle['end'])
             })
         
-        print_progress(f"Prepared {len(subtitle_data)} subtitles for editor")
-        
-        # Send to editor
+        # Write initial SRT file
         subtitle_file = "temp_subtitles.srt"
-        editor_payload = {
-            'subtitles': subtitle_data,
-            'subtitleFile': subtitle_file
-        }
-        
-        # Write initial SRT file that editor will modify
         with open(subtitle_file, 'w', encoding='utf-8') as f:
-            for i, sub in enumerate(subtitle_data):
+            for i, sub in enumerate(subtitle_data_for_editor):
                 def format_time(seconds):
                     hours = int(seconds // 3600)
                     minutes = int((seconds % 3600) // 60)
@@ -334,18 +357,25 @@ def main():
                 f.write(f"{format_time(sub['start'])} --> {format_time(sub['end'])}\n")
                 f.write(f"{sub['text']}\n\n")
         
-        print_progress("Sending subtitles to editor...")
-        print(f"EDITOR_REQUEST::{json.dumps(editor_payload)}", flush=True)
-        print_progress("Waiting for subtitle editing confirmation...")
+        # Send editor request
+        editor_payload = {
+            'subtitles': subtitle_data_for_editor,
+            'subtitleFile': subtitle_file
+        }
         
-        # Wait for editor confirmation
+        sys.stdout.flush()
+        print(f"EDITOR_REQUEST::{json.dumps(editor_payload)}", flush=True)
+        sys.stdout.flush()
+        
+        print_progress("Waiting for subtitle editing confirmation...")
         confirmation = input()
+        
         if confirmation != "EDITOR_CONFIRMED":
             raise Exception("Editor not confirmed")
         
         print_progress("Editor confirmed, processing final video...")
         
-        # Read edited subtitles
+        # Read edited subtitles from the first editor session
         subtitle_data = parse_srt_file(subtitle_file)
         
         # Convert to SRT with formatting
@@ -359,9 +389,17 @@ def main():
         rtl_languages = ['ar', 'fa', 'he', 'ur']
         is_rtl = destination_lang in rtl_languages
         
+        subtitle_offset = float(os.getenv('SUBTITLE_OFFSET_SECONDS', '-0.30'))
+
+        def apply_offset(start_val, end_val):
+            s = max(0.0, start_val + subtitle_offset)
+            e = max(s + 0.01, end_val + subtitle_offset)
+            return s, e
+
         with open(subtitle_file, 'w', encoding='utf-8') as f:
             for i, sub in enumerate(subtitle_data):
                 subtitle_text = format_subtitle_text(sub['text'], is_rtl)
+                adj_start, adj_end = apply_offset(sub['start'], sub['end'])
                 
                 def format_time(seconds):
                     hours = int(seconds // 3600)
@@ -371,7 +409,7 @@ def main():
                     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
                 
                 f.write(f"{i + 1}\n")
-                f.write(f"{format_time(sub['start'])} --> {format_time(sub['end'])}\n")
+                f.write(f"{format_time(adj_start)} --> {format_time(adj_end)}\n")
                 f.write(f"{subtitle_text}\n\n")
         
         # Step 5: Add subtitles to video
@@ -395,12 +433,26 @@ def main():
         
         print_progress("Cleaning up S3 resources...")
         try:
-            s3.delete_object(Bucket=bucket_name, Key=s3_key)
-            s3.delete_object(Bucket=bucket_name, Key=f"{job_name}.json")
+            # Empty all objects in the bucket first
+            paginator = s3.get_paginator('list_objects_v2')
+            pages = paginator.paginate(Bucket=bucket_name)
+            for page in pages:
+                if 'Contents' in page:
+                    objects = [{'Key': obj['Key']} for obj in page['Contents']]
+                    if objects:
+                        s3.delete_objects(Bucket=bucket_name, Delete={'Objects': objects})
+                        print_progress(f"Deleted {len(objects)} objects from S3")
+            
+            # Delete the bucket
             s3.delete_bucket(Bucket=bucket_name)
+            print_progress("S3 bucket deleted successfully")
         except Exception as cleanup_error:
             print_progress(f"Warning: S3 cleanup error (non-critical): {str(cleanup_error)}")
         
+        # Generate and emit custom success message
+        msg = generate_success_message(output_video)
+        print(f"SUCCESS_MESSAGE::{msg}", flush=True)
+
         print_progress("Video processing complete!")
         sys.exit(0)
         
