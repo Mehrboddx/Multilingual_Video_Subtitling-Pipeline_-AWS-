@@ -1,9 +1,10 @@
-
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
+const fs = require('fs');
 
 let mainWindow;
+let editorWindow;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -23,6 +24,50 @@ function createWindow() {
   });
 
   mainWindow.loadFile('index.html');
+  // Open maximized for better UX
+  mainWindow.maximize();
+}
+
+function createEditorWindow(videoPath, subtitleData) {
+  editorWindow = new BrowserWindow({
+    width: 1400,
+    height: 900,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      webSecurity: false, // Allow loading local video files
+    },
+    backgroundColor: '#1a1a1a',
+    parent: mainWindow,
+  });
+
+  editorWindow.loadFile('editor.html');
+
+  // Send data after window loads
+  editorWindow.webContents.once('did-finish-load', () => {
+    console.log('Editor window loaded, sending data...');
+    console.log('Video path:', videoPath);
+    console.log('Subtitles count:', subtitleData.length);
+    
+    // Convert Windows path to proper file URL with encoding
+    // Handle backslashes and special characters properly
+    const normalizedPath = videoPath.replace(/\\/g, '/');
+    const fileUrl = `file:///${normalizedPath}`;
+    
+    console.log('File URL:', fileUrl);
+    
+    editorWindow.webContents.send('editor-init', {
+      videoPath: fileUrl,
+      subtitles: subtitleData
+    });
+  });
+
+  editorWindow.on('closed', () => {
+    editorWindow = null;
+  });
+  // Open maximized for better UX
+  editorWindow.maximize();
 }
 
 app.whenReady().then(createWindow);
@@ -53,27 +98,40 @@ ipcMain.handle('select-video', async () => {
 // Select output location
 ipcMain.handle('select-output', async (event, inputPath) => {
   const inputName = path.basename(inputPath, path.extname(inputPath));
+  const inputExt = path.extname(inputPath);
   
-  const result = await dialog.showSaveDialog(mainWindow, {
-    defaultPath: `${inputName}_translated.mp4`,
-    filters: [
-      { name: 'Video', extensions: ['mp4'] }
-    ]
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openDirectory'],
+    title: 'Select Output Folder'
   });
   
   if (!result.canceled) {
-    return result.filePath;
+    const outputFolder = result.filePaths[0];
+    // Base filename
+    let outputFileName = `${inputName}_subtitled${inputExt}`;
+    let outputPath = path.join(outputFolder, outputFileName);
+    
+    // If file exists, append a numeric suffix (e.g., "_subtitled (1)")
+    let counter = 1;
+    while (fs.existsSync(outputPath)) {
+      outputFileName = `${inputName}_subtitled (${counter})${inputExt}`;
+      outputPath = path.join(outputFolder, outputFileName);
+      counter += 1;
+    }
+    
+    return outputPath;
   }
   return null;
 });
 
-// ===== THIS IS WHERE YOUR PYTHON SCRIPT RUNS =====
+// Process video with editor integration
 ipcMain.handle('process-video', async (event, { inputPath, outputPath, sourceLang, targetLang }) => {
   return new Promise((resolve, reject) => {
-    // Path to your Python script
     const pythonScript = path.join(__dirname, 'video_processor.py');
     
-    // Spawn Python process
+    // Store inputPath in a variable accessible to handlers
+    let currentVideoPath = inputPath;
+    
     const pythonProcess = spawn('python', [
       pythonScript,
       inputPath,
@@ -88,58 +146,115 @@ ipcMain.handle('process-video', async (event, { inputPath, outputPath, sourceLan
     let outputData = '';
     let errorData = '';
     let waitingForUserInput = false;
+    let waitingForEditorConfirmation = false;
+    let tempSubtitleFile = '';
+    let successMessage = '';
 
-    // Capture stdout (for progress updates and preview requests)
     pythonProcess.stdout.on('data', (data) => {
       const chunk = data.toString();
       outputData += chunk;
 
-      // Split chunk into individual lines to handle multiple messages per event
       const lines = chunk.split(/\r?\n/).filter(l => l.trim().length > 0);
       for (const line of lines) {
-        // Check if this is a preview request anywhere within the chunk
-        if (line.startsWith('PREVIEW_TEXT::')) {
-          const transcriptText = line.slice('PREVIEW_TEXT::'.length);
-          waitingForUserInput = true;
-          // Send preview to frontend and wait for edited text
-          mainWindow.webContents.send('show-text-preview', transcriptText);
+        // Editor request with subtitle data
+        if (line.startsWith('EDITOR_REQUEST::')) {
+          const jsonData = line.slice('EDITOR_REQUEST::'.length);
+          try {
+            const editorData = JSON.parse(jsonData);
+            tempSubtitleFile = editorData.subtitleFile;
+            
+            // Open editor window with the ORIGINAL video path
+            createEditorWindow(currentVideoPath, editorData.subtitles);
+            waitingForEditorConfirmation = true;
+            mainWindow.webContents.send('processing-progress', 'Opening subtitle editor...');
+          } catch (err) {
+            console.error('Failed to parse editor data:', err);
+          }
           continue;
         }
 
-        // Send progress updates to frontend for normal lines
+        // Success message from Python for celebration overlay
+        if (line.startsWith('SUCCESS_MESSAGE::')) {
+          successMessage = line.slice('SUCCESS_MESSAGE::'.length);
+          mainWindow.webContents.send('processing-progress', 'Generating success message...');
+          continue;
+        }
+
         mainWindow.webContents.send('processing-progress', line.trim());
       }
     });
 
-    // Handle edited text from user
-    ipcMain.once('text-edited', (event, editedText) => {
-      if (waitingForUserInput) {
-        pythonProcess.stdin.write(`EDITED_TEXT::${editedText}\n`);
-        waitingForUserInput = false;
+    // Handle subtitle save from editor
+    ipcMain.once('subtitles-saved', (event, subtitles) => {
+      if (waitingForEditorConfirmation && tempSubtitleFile) {
+        // Convert subtitles back to SRT format
+        const srtContent = convertToSRT(subtitles);
+        fs.writeFileSync(tempSubtitleFile, srtContent, 'utf-8');
+        
+        // Signal Python to continue
+        pythonProcess.stdin.write('EDITOR_CONFIRMED\n');
+        waitingForEditorConfirmation = false;
+        
+        // Close editor window
+        if (editorWindow) {
+          editorWindow.close();
+        }
+        
+        mainWindow.webContents.send('processing-progress', 'Subtitle edits saved, continuing...');
       }
     });
 
-    // Capture stderr (for errors)
+    // Handle editor cancellation
+    ipcMain.once('editor-cancelled', () => {
+      if (waitingForEditorConfirmation) {
+        pythonProcess.kill();
+        reject({ success: false, error: 'Processing cancelled by user' });
+      }
+    });
+
     pythonProcess.stderr.on('data', (data) => {
       errorData += data.toString();
     });
 
-    // Handle process completion
     pythonProcess.on('close', (code) => {
       if (code === 0) {
-        resolve({ success: true, output: outputData });
+        // Fallback: parse success message from aggregated output if not captured live
+        if (!successMessage && outputData) {
+          const match = outputData.match(/SUCCESS_MESSAGE::(.+)/);
+          if (match && match[1]) {
+            successMessage = match[1].trim();
+          }
+        }
+        resolve({ success: true, output: outputData, successMessage });
       } else {
         reject({ success: false, error: errorData });
       }
     });
 
-    // Handle process errors
     pythonProcess.on('error', (error) => {
       reject({ success: false, error: error.message });
     });
   });
 });
 
+// Convert subtitles array to SRT format
+function convertToSRT(subtitles) {
+  let srt = '';
+  
+  subtitles.forEach((sub, index) => {
+    srt += `${index + 1}\n`;
+    srt += `${formatSRTTime(sub.start)} --> ${formatSRTTime(sub.end)}\n`;
+    srt += `${sub.text}\n\n`;
+  });
+  
+  return srt;
+}
 
-
-
+function formatSRTTime(seconds) {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = Math.floor(seconds % 60);
+  const millis = Math.floor((seconds % 1) * 1000);
+  
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')},${String(millis).padStart(3, '0')}`;
+}

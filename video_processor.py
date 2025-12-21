@@ -6,12 +6,9 @@ import time
 import json
 from pathlib import Path
 
-# Set environment variables for UTF-8 encoding
 os.environ['PYTHONIOENCODING'] = 'utf-8'
 
 def load_dotenv_simple():
-    """Minimal .env loader to populate os.environ before AWS clients.
-    Supports KEY=VALUE pairs; ignores comments and blank lines."""
     try:
         script_dir = Path(__file__).resolve().parent
         env_path = script_dir / '.env'
@@ -25,14 +22,11 @@ def load_dotenv_simple():
                 key, val = s.split('=', 1)
                 key = key.strip()
                 val = val.strip().strip('"')
-                # Don't overwrite already-set env vars
                 if key and key not in os.environ:
                     os.environ[key] = val
     except Exception:
-        # Non-fatal; continue without .env
         pass
 
-# Prefer python-dotenv if available; fallback to simple loader
 try:
     from dotenv import load_dotenv as _load_dotenv
     _DOTENV_AVAILABLE = True
@@ -41,51 +35,34 @@ except Exception:
     _DOTENV_AVAILABLE = False
 
 def load_env():
-    """Load environment variables from .env next to this script.
-    Uses python-dotenv when available, otherwise the simple loader."""
     try:
         script_dir = Path(__file__).resolve().parent
         env_path = script_dir / '.env'
         if _DOTENV_AVAILABLE and _load_dotenv:
-            # Explicit path to avoid cwd differences
             _load_dotenv(dotenv_path=env_path)
         else:
             load_dotenv_simple()
     except Exception:
-        # Fallback to simple loader if anything goes wrong
         load_dotenv_simple()
 
 def print_progress(message):
-    """Print progress messages that will be captured by Electron"""
-    # Ensure message is a string
     if isinstance(message, bytes):
         message = message.decode('utf-8', errors='ignore')
     print(message, flush=True)
 
 def transcribe_to_translate_lang(transcribe_code):
-    """Convert AWS Transcribe language code to AWS Translate language code"""
-    # Extract base language code (e.g., 'en-US' -> 'en')
     base_lang = transcribe_code.split('-')[0]
-    
-    # Handle special cases
     if transcribe_code == 'zh-CN':
-        return 'zh'  # Simplified Chinese
+        return 'zh'
     elif transcribe_code == 'zh-TW':
-        return 'zh-TW'  # Traditional Chinese
-    
+        return 'zh-TW'
     return base_lang
 
 def translate_with_bedrock(text, source_lang, target_lang):
-    """Translate using Amazon Bedrock via the unified converse API.
-
-    Env vars:
-      - MODEL_ID (e.g., 'anthropic.claude-3-sonnet-20240229-v1:0', 'meta.llama3-70b-instruct')
-    """
     model_id = os.getenv('MODEL_ID')
     if not model_id:
         raise Exception('MODEL_ID is not set in .env')
 
-    # Always use eu-central-1 (Frankfurt) for all AWS services
     client = boto3.client('bedrock-runtime', region_name='eu-central-1')
 
     prompt = (
@@ -94,9 +71,7 @@ def translate_with_bedrock(text, source_lang, target_lang):
         f"This text is for subtitles; keep phrasing concise. Return only translated text.\n\n{text}"
     )
 
-    messages = [
-        {"role": "user", "content": [{"text": prompt}]}
-    ]
+    messages = [{"role": "user", "content": [{"text": prompt}]}]
 
     resp = client.converse(
         modelId=model_id,
@@ -115,6 +90,41 @@ def translate_with_bedrock(text, source_lang, target_lang):
     translated = '\n'.join(translated_parts).strip()
     return translated or text
 
+def parse_srt_file(filepath):
+    """Parse SRT file and return list of subtitle objects"""
+    with open(filepath, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    subtitles = []
+    blocks = content.strip().split('\n\n')
+    
+    for block in blocks:
+        lines = block.strip().split('\n')
+        if len(lines) >= 3:
+            # Parse time
+            time_line = lines[1]
+            start_str, end_str = time_line.split(' --> ')
+            
+            def parse_time(time_str):
+                time_str = time_str.replace(',', '.')
+                parts = time_str.split(':')
+                hours = int(parts[0])
+                minutes = int(parts[1])
+                seconds = float(parts[2])
+                return hours * 3600 + minutes * 60 + seconds
+            
+            start = parse_time(start_str)
+            end = parse_time(end_str)
+            text = '\n'.join(lines[2:])
+            
+            subtitles.append({
+                'text': text,
+                'start': start,
+                'end': end
+            })
+    
+    return subtitles
+
 def main():
     if len(sys.argv) != 5:
         print("Usage: video_processor.py <input_video> <output_video> <origin_lang> <destination_lang>")
@@ -125,59 +135,43 @@ def main():
     origin_lang = sys.argv[3]
     destination_lang = sys.argv[4]
     
-    
     try:
-        # Load .env before creating AWS clients
         load_env()
-        # ===== YOUR PIPELINE STARTS HERE =====
-        
         print_progress("Starting video processing...")
         
-        # Step 1: Extract audio from video
+        # Step 1: Extract audio
         print_progress("Extracting audio from video...")
         output_audio = "temp_audio.mp3"
         subprocess.run([
-            "ffmpeg", 
-            "-i", input_video, 
-            "-vn",  # No video
-            "-acodec", "libmp3lame",  # MP3 codec
-            "-b:a", "128k",  # Audio bitrate (128k is good enough for transcription)
-            "-ar", "16000",  # Sample rate 16kHz (sufficient for speech recognition)
-            "-ac", "1",  # Mono audio (faster processing)
-            "-y",  # Overwrite output file without asking
-            output_audio
+            "ffmpeg", "-i", input_video, "-vn", "-acodec", "libmp3lame",
+            "-b:a", "128k", "-ar", "16000", "-ac", "1", "-y", output_audio
         ], check=True, capture_output=True, text=True, encoding='utf-8', errors='ignore')
-       
         
-        # Step 2: Transcribe audio to text
+        # Step 2: Transcribe
         print_progress("Transcribing audio...")
-        # Always use eu-central-1 (Frankfurt) for all AWS services
         region = 'eu-central-1'
         transcriber = boto3.client('transcribe', region_name=region)
         
-        # Use unique job name with timestamp to avoid conflicts
         import datetime
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         job_name = f"transcription_job_{timestamp}"
         
-        # Delete old job if it exists (cleanup from previous runs)
         try:
             transcriber.delete_transcription_job(TranscriptionJobName="transcription_job")
         except:
-            pass  # Job doesn't exist, continue
+            pass
+            
         s3 = boto3.client('s3', region_name=region)
         bucket_name = "mozhis-video-translator-bucket"
         s3_key = "input_audio.mp3"
         
-        # Create bucket in eu-central-1 (Frankfurt) with location constraint
         try:
             s3.create_bucket(
                 Bucket=bucket_name,
                 CreateBucketConfiguration={'LocationConstraint': region}
             )
-            
         except s3.exceptions.BucketAlreadyOwnedByYou:
-            pass  # Bucket already exists, continue
+            pass
         except Exception as e:
             if 'BucketAlreadyExists' not in str(e):
                 raise
@@ -193,7 +187,6 @@ def main():
             OutputBucketName=bucket_name
         )
         
-        # Wait for transcription job to complete
         print_progress("Waiting for transcription to complete...")
         while True:
             status = transcriber.get_transcription_job(TranscriptionJobName=job_name)
@@ -204,23 +197,18 @@ def main():
             elif job_status == 'FAILED':
                 raise Exception("Transcription job failed")
             
-            time.sleep(5)  # Wait 5 seconds before checking again
+            time.sleep(5)
         
-        # Retrieve transcription result from S3
         print_progress("Retrieving transcription...")
-        
-        # Download the JSON file from S3
         transcript_key = f"{job_name}.json"
         s3.download_file(bucket_name, transcript_key, 'temp_transcript.json')
         
-        # Parse the transcription
         with open('temp_transcript.json', 'r', encoding='utf-8') as f:
             transcript_data = json.load(f)
         
         transcription_text = transcript_data['results']['transcripts'][0]['transcript']
         
-        # Step 3: Translate the transcription (skip if same language)
-        # Convert Transcribe language code to Translate language code
+        # Step 3: Translate
         translate_source_lang = transcribe_to_translate_lang(origin_lang)
         
         translation_skipped = translate_source_lang == destination_lang
@@ -246,35 +234,17 @@ def main():
                 )
                 translated_text = response.get('TranslatedText')
         
-        # Send translated text for user preview/editing
-        # Format: PREVIEW_TEXT::<text>
-        print(f"PREVIEW_TEXT::{translated_text}", flush=True)
+        # Translation complete - will be edited in the subtitle editor later
+        print_progress(f"Translation complete. Text length: {len(translated_text)} characters")
         
-        # Wait for edited text from user
-        # Format expected: EDITED_TEXT::<text with **bold** markup>
-        print_progress("Waiting for user to review and edit translated text...")
-        edited_text = input()  # This will block until Electron sends the edited text
-        
-        if not edited_text.startswith("EDITED_TEXT::"):
-            raise Exception("Invalid edited text format")
-        
-        edited_text = edited_text.replace("EDITED_TEXT::", "", 1)
-        translated_text = edited_text  # Use the edited version
-        
-    
-            # Step 4: Create subtitle file
-        print_progress("Creating subtitles...")
-
-        # Get word-level timestamps from transcription
+        # Step 4: Create initial subtitles with timestamps
+        print_progress("Creating subtitles with timestamps...")
         items = transcript_data['results']['items']
 
-        # Group words into subtitle segments (every 10-12 words or by punctuation for natural reading)
-        subtitle_file = "temp_subtitles.srt"
         subtitles = []
         current_words = []
         current_start = None
         current_end = None
-        subtitle_index = 1
 
         for item in items:
             if item['type'] == 'pronunciation':
@@ -288,80 +258,71 @@ def main():
                 current_words.append(word)
                 current_end = end_time
                 
-                # Create a subtitle segment every 10-12 words or at strong punctuation
                 if len(current_words) >= 12:
                     subtitles.append({
-                        'index': subtitle_index,
                         'start': current_start,
                         'end': current_end,
                         'words': ' '.join(current_words)
                     })
-                    subtitle_index += 1
                     current_words = []
                     current_start = None
             
             elif item['type'] == 'punctuation' and current_words:
-                # Add punctuation to current segment and close it
                 punctuation = item['alternatives'][0]['content']
                 current_words[-1] += punctuation
                 
                 if punctuation in ['.', '!', '?'] and current_words:
                     subtitles.append({
-                        'index': subtitle_index,
                         'start': current_start,
                         'end': current_end,
                         'words': ' '.join(current_words)
                     })
-                    subtitle_index += 1
                     current_words = []
                     current_start = None
 
-        # Add remaining words
         if current_words:
             subtitles.append({
-                'index': subtitle_index,
                 'start': current_start,
                 'end': current_end,
                 'words': ' '.join(current_words)
             })
-            
-        # Prepare segmented text
+        
+        print_progress(f"Created {len(subtitles)} subtitle segments")
+        
+        # Map translated text to subtitles
         translated_words = translated_text.split()
         words_per_subtitle = max(1, len(translated_words) // len(subtitles))
         
-        # Convert **markup** markers to a colored span for emphasis
-        def format_subtitle_text(text, is_rtl=False):
-            # Replace **text** with colored font tag
-            import re
-            text = re.sub(r'\*\*(.+?)\*\*', r'<font color="#FFD700">\1</font>', text)
+        subtitle_data = []
+        start_idx = 0
+        for i, subtitle in enumerate(subtitles):
+            if translation_skipped:
+                text = subtitle['words']
+            else:
+                end_idx = min(start_idx + words_per_subtitle, len(translated_words))
+                if i == len(subtitles) - 1:
+                    end_idx = len(translated_words)
+                text = ' '.join(translated_words[start_idx:end_idx])
+                start_idx = end_idx
             
-            # Add RTL marker for right-to-left languages
-            if is_rtl:
-                # Add Unicode RTL mark (U+200F) at the beginning
-                text = '\u200F' + text
-            
-            return text
+            subtitle_data.append({
+                'text': text,
+                'start': float(subtitle['start']),
+                'end': float(subtitle['end'])
+            })
         
-        # Check if target language is RTL
-        rtl_languages = ['ar', 'fa', 'he', 'ur']  # Arabic, Persian, Hebrew, Urdu
-        is_rtl = destination_lang in rtl_languages
+        print_progress(f"Prepared {len(subtitle_data)} subtitles for editor")
         
-        # Write SRT file
+        # Send to editor
+        subtitle_file = "temp_subtitles.srt"
+        editor_payload = {
+            'subtitles': subtitle_data,
+            'subtitleFile': subtitle_file
+        }
+        
+        # Write initial SRT file that editor will modify
         with open(subtitle_file, 'w', encoding='utf-8') as f:
-            start_idx = 0
-            for i, subtitle in enumerate(subtitles):
-                # Use original segment text when translation is skipped for better alignment
-                if translation_skipped:
-                    subtitle_text = format_subtitle_text(subtitle['words'], is_rtl)
-                else:
-                    # Get corresponding translated words
-                    end_idx = min(start_idx + words_per_subtitle, len(translated_words))
-                    if i == len(subtitles) - 1:  # Last subtitle gets remaining words
-                        end_idx = len(translated_words)
-                    subtitle_text = ' '.join(translated_words[start_idx:end_idx])
-                    subtitle_text = format_subtitle_text(subtitle_text, is_rtl)
-                
-                # Format time as HH:MM:SS,mmm
+            for i, sub in enumerate(subtitle_data):
                 def format_time(seconds):
                     hours = int(seconds // 3600)
                     minutes = int((seconds % 3600) // 60)
@@ -369,28 +330,62 @@ def main():
                     millis = int((seconds % 1) * 1000)
                     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
                 
-                # Write SRT entry
-                f.write(f"{subtitle['index']}\n")
-                f.write(f"{format_time(subtitle['start'])} --> {format_time(subtitle['end'])}\n")
-                f.write(f"{subtitle_text}\n\n")
+                f.write(f"{i + 1}\n")
+                f.write(f"{format_time(sub['start'])} --> {format_time(sub['end'])}\n")
+                f.write(f"{sub['text']}\n\n")
+        
+        print_progress("Sending subtitles to editor...")
+        print(f"EDITOR_REQUEST::{json.dumps(editor_payload)}", flush=True)
+        print_progress("Waiting for subtitle editing confirmation...")
+        
+        # Wait for editor confirmation
+        confirmation = input()
+        if confirmation != "EDITOR_CONFIRMED":
+            raise Exception("Editor not confirmed")
+        
+        print_progress("Editor confirmed, processing final video...")
+        
+        # Read edited subtitles
+        subtitle_data = parse_srt_file(subtitle_file)
+        
+        # Convert to SRT with formatting
+        def format_subtitle_text(text, is_rtl=False):
+            import re
+            text = re.sub(r'\*\*(.+?)\*\*', r'<font color="#FFD700">\1</font>', text)
+            if is_rtl:
+                text = '\u200F' + text
+            return text
+        
+        rtl_languages = ['ar', 'fa', 'he', 'ur']
+        is_rtl = destination_lang in rtl_languages
+        
+        with open(subtitle_file, 'w', encoding='utf-8') as f:
+            for i, sub in enumerate(subtitle_data):
+                subtitle_text = format_subtitle_text(sub['text'], is_rtl)
                 
-                if not translation_skipped:
-                    start_idx = end_idx
+                def format_time(seconds):
+                    hours = int(seconds // 3600)
+                    minutes = int((seconds % 3600) // 60)
+                    secs = int(seconds % 60)
+                    millis = int((seconds % 1) * 1000)
+                    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+                
+                f.write(f"{i + 1}\n")
+                f.write(f"{format_time(sub['start'])} --> {format_time(sub['end'])}\n")
+                f.write(f"{subtitle_text}\n\n")
         
         # Step 5: Add subtitles to video
         print_progress("Adding subtitles to video...")
-        
-        # Use ffmpeg to burn subtitles into video (borderless style)
         subprocess.run([
             'ffmpeg', '-i', input_video,
             '-vf', f"subtitles={subtitle_file}:force_style='FontName=Arial,FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=0,Outline=0,Shadow=0'",
             '-c:a', 'copy',
             output_video,
-            '-y'  # Overwrite output file if exists
+            '-y'
         ], check=True)
-        # Clean up temporary files
+        
+        # Cleanup
         print_progress("Cleaning up temporary files...")
-        # Delete local temporary files
         if os.path.exists(output_audio):
             os.remove(output_audio)
         if os.path.exists('temp_transcript.json'):
@@ -398,29 +393,20 @@ def main():
         if os.path.exists(subtitle_file):
             os.remove(subtitle_file)
         
-        # Clean up S3 resources
         print_progress("Cleaning up S3 resources...")
         try:
-            # Delete uploaded audio file
             s3.delete_object(Bucket=bucket_name, Key=s3_key)
-            
-            # Delete transcription result file
             s3.delete_object(Bucket=bucket_name, Key=f"{job_name}.json")
-            
-            # Delete the S3 bucket (only works if empty)
             s3.delete_bucket(Bucket=bucket_name)
         except Exception as cleanup_error:
             print_progress(f"Warning: S3 cleanup error (non-critical): {str(cleanup_error)}")
         
         print_progress("Video processing complete!")
-        
-        # ===== YOUR PIPELINE ENDS HERE =====
-        
-        sys.exit(0)  # Success
+        sys.exit(0)
         
     except Exception as e:
         print(f"ERROR: {str(e)}", file=sys.stderr)
-        sys.exit(1)  # Failure
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Video Subtitle Editor</title>
+  <link rel="stylesheet" href="editor-styles.css">
+  <script defer src="editor_renderer.js"></script>
+</head>
+<body>
+  <div class="editor-container">
+    <!-- Header -->
+    <div class="editor-header">
+      <h1>🎬 Subtitle Editor</h1>
+      <div class="header-actions">
+        <button id="undoBtn" class="btn btn-icon" disabled title="Undo">↶</button>
+        <button id="redoBtn" class="btn btn-icon" disabled title="Redo">↷</button>
+        <button id="saveBtn" class="btn btn-primary">Save & Export</button>
+        <button id="cancelBtn" class="btn btn-secondary">Cancel</button>
+      </div>
+    </div>
+
+    <!-- Video Preview Panel -->
+    <div class="video-panel">
+      <div class="video-container">
+        <video id="videoPlayer" controls></video>
+        <div id="subtitleOverlay" class="subtitle-overlay"></div>
+      </div>
+      
+      <!-- Playback Controls -->
+      <div class="playback-controls">
+        <button id="playPauseBtn" class="btn btn-icon">▶️</button>
+        <input type="range" id="seekBar" class="seek-bar" min="0" max="100" value="0">
+        <span id="currentTime" class="time-display">00:00</span>
+        <span>/</span>
+        <span id="duration" class="time-display">00:00</span>
+        <button id="muteBtn" class="btn btn-icon">🔊</button>
+        <input type="range" id="volumeSlider" class="volume-slider" min="0" max="100" value="100">
+      </div>
+    </div>
+
+    <!-- Timeline Panel -->
+    <div class="timeline-panel">
+      <div class="timeline-header">
+        <h3>Timeline</h3>
+        <div class="timeline-controls">
+          <button id="zoomInBtn" class="btn btn-icon" title="Zoom In">🔍+</button>
+          <button id="zoomOutBtn" class="btn btn-icon" title="Zoom Out">🔍-</button>
+          <span class="zoom-level">100%</span>
+        </div>
+      </div>
+      
+      <div class="timeline-container" id="timelineContainer">
+        <div class="timeline-ruler" id="timelineRuler"></div>
+        <div class="timeline-tracks" id="timelineTracks">
+          <!-- Subtitle blocks will be inserted here -->
+        </div>
+        <div class="playhead" id="playhead"></div>
+      </div>
+    </div>
+
+    <!-- Subtitle Editor Panel -->
+    <div class="subtitle-panel">
+      <div class="subtitle-header">
+        <h3>Subtitle Editor</h3>
+        <button id="addSubtitleBtn" class="btn btn-small">+ Add Subtitle</button>
+      </div>
+      
+      <div id="subtitleEditor" class="subtitle-editor">
+        <div class="subtitle-placeholder">
+          Select a subtitle from the timeline to edit
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit Subtitle Modal -->
+  <div id="editModal" class="modal" style="display: none;">
+    <div class="modal-content modal-large">
+      <h2>Edit Subtitle</h2>
+      
+      <div class="form-group">
+        <label>Text</label>
+        <div class="formatting-toolbar">
+          <button type="button" id="boldBtn" class="btn btn-icon" title="Bold (Ctrl+B)">B</button>
+          <button type="button" id="italicBtn" class="btn btn-icon" title="Italic (Ctrl+I)">I</button>
+          <button type="button" id="clearFormatBtn" class="btn btn-icon" title="Clear Formatting">✕</button>
+        </div>
+        <textarea id="subtitleText" class="subtitle-text-input" rows="3"></textarea>
+      </div>
+      
+      <div class="form-row">
+        <div class="form-group">
+          <label>Start Time (seconds)</label>
+          <input type="number" id="subtitleStart" step="0.01" min="0" class="time-input">
+        </div>
+        
+        <div class="form-group">
+          <label>End Time (seconds)</label>
+          <input type="number" id="subtitleEnd" step="0.01" min="0" class="time-input">
+        </div>
+        
+        <div class="form-group">
+          <label>Duration</label>
+          <input type="text" id="subtitleDuration" readonly class="time-input">
+        </div>
+      </div>
+      
+      <div class="modal-actions">
+        <button id="deleteSubtitleBtn" class="btn btn-danger">Delete</button>
+        <div style="flex: 1;"></div>
+        <button id="cancelEditBtn" class="btn btn-secondary">Cancel</button>
+        <button id="saveEditBtn" class="btn btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

@@ -14,16 +14,18 @@
       <p class="subtitle">Translate your videos with subtitles</p>
     </div>
 
-    <div class="card">
-      <div class="input-group">
+    <div class="content-grid">
+      <div class="left-pane">
+        <div class="card">
+          <div class="input-group">
         <label>Video File</label>
         <div class="file-selector">
           <input type="text" id="videoPath" readonly placeholder="No file selected">
           <button id="selectVideoBtn" class="btn btn-secondary">Browse</button>
         </div>
-      </div>
+          </div>
 
-      <div class="input-group">
+          <div class="input-group">
         <label>Source Language (Original)</label>
         <select id="sourceLang" class="select">
           <option value="en-US">English (US)</option>
@@ -42,9 +44,9 @@
           <option value="ar-AE">Arabic (UAE)</option>
           <option value="fa-IR">Persian</option>
         </select>
-      </div>
+          </div>
 
-      <div class="input-group">
+          <div class="input-group">
         <label>Target Language (Translate To)</label>
         <select id="targetLang" class="select">
           <option value="en">English</option>
@@ -60,31 +62,35 @@
           <option value="ar">Arabic</option>
           <option value="fa">Persian</option>
         </select>
-      </div>
+          </div>
 
-      <div class="input-group">
+          <div class="input-group">
         <label>Output Location</label>
         <div class="file-selector">
           <input type="text" id="outputPath" readonly placeholder="Will be set after video selection">
           <button id="selectOutputBtn" class="btn btn-secondary" disabled>Browse</button>
         </div>
+          </div>
+
+          <button id="processBtn" class="btn btn-primary" disabled>
+            Start Translation
+          </button>
+        </div>
+
       </div>
 
-      <button id="processBtn" class="btn btn-primary" disabled>
-        Start Translation
-      </button>
-    </div>
-
-    <div id="progressSection" class="progress-section" style="display: none;">
-      <div class="progress-bar">
-        <div id="progressFill" class="progress-fill"></div>
+      <div class="right-pane">
+        <div id="progressSection" class="progress-section" style="display: none;">
+          <div class="progress-bar">
+            <div id="progressFill" class="progress-fill"></div>
+          </div>
+          <div id="progressText" class="progress-text">Processing...</div>
+        </div>
+        <div id="logSection" class="log-section" style="display: none;">
+          <h3>Processing Log</h3>
+          <div id="logOutput" class="log-output"></div>
+        </div>
       </div>
-      <div id="progressText" class="progress-text">Processing...</div>
-    </div>
-
-    <div id="logSection" class="log-section" style="display: none;">
-      <h3>Processing Log</h3>
-      <div id="logOutput" class="log-output"></div>
     </div>
   </div>
 
@@ -100,6 +106,16 @@
         <button id="cancelEditBtn" class="btn btn-secondary">Cancel</button>
         <button id="confirmEditBtn" class="btn btn-primary">Confirm & Continue</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Celebration Overlay -->
+  <div id="celebrationOverlay" class="celebration-overlay" style="display: none;">
+    <div class="celebration-content">
+      <div class="celebration-icon">🎉</div>
+      <h2 id="celebrationTitle">Translation Complete!</h2>
+      <p id="celebrationMessage" class="celebration-message">Your video has been translated successfully.</p>
+      <button id="closeCelebrationBtn" class="btn btn-secondary">Close</button>
     </div>
   </div>
 </body>

@@ -64,13 +64,24 @@ processBtn.addEventListener('click', async () => {
     progressFill.style.backgroundColor = '#4caf50';
     
     addLog('✅ Video processing complete!', 'success');
-    alert('Video translated successfully!');
+    
+    // Show celebration overlay instead of alert. Prefer custom success message from backend.
+    const customMsg = (result && result.successMessage) ? result.successMessage : null;
+    if (customMsg) {
+      addLog(`🎉 Message: ${customMsg}`, 'success');
+    } else {
+      addLog('ℹ️ Using fallback success message', 'info');
+    }
+    const fallbackMsg = selectedOutputPath
+      ? `Video saved to: ${selectedOutputPath}`
+      : 'Your video has been translated successfully.';
+    showCelebration('Translation Complete!', customMsg || fallbackMsg);
     
   } catch (error) {
     progressText.textContent = '❌ Error occurred';
     progressFill.style.backgroundColor = '#f44336';
     addLog(`❌ Error: ${error.error || error.message}`, 'error');
-    alert('An error occurred during processing. Check the log for details.');
+    // Keep alerts for errors for now; can be replaced with a toast later
   } finally {
     // Re-enable controls
     processBtn.disabled = false;
@@ -103,6 +114,41 @@ window.electronAPI.onProgress((message) => {
     progressText.textContent = 'Adding subtitles to video...';
   }
 });
+// Celebration helpers
+const celebrationOverlay = document.getElementById('celebrationOverlay');
+const celebrationTitle = document.getElementById('celebrationTitle');
+const celebrationMessage = document.getElementById('celebrationMessage');
+const closeCelebrationBtn = document.getElementById('closeCelebrationBtn');
+
+function showCelebration(title, message) {
+  celebrationTitle.textContent = title || 'Done!';
+  celebrationMessage.textContent = message || '';
+  celebrationOverlay.style.display = 'flex';
+  runConfetti(120);
+}
+
+function hideCelebration() {
+  celebrationOverlay.style.display = 'none';
+}
+
+closeCelebrationBtn.addEventListener('click', hideCelebration);
+
+function runConfetti(count = 80) {
+  const colors = ['#ffd700', '#ff6b6b', '#4caf50', '#00bcd4', '#9c27b0', '#ff9800'];
+  for (let i = 0; i < count; i++) {
+    const piece = document.createElement('div');
+    piece.className = 'confetti';
+    piece.style.left = Math.random() * 100 + 'vw';
+    piece.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)];
+    piece.style.width = (6 + Math.random() * 6) + 'px';
+    piece.style.height = (10 + Math.random() * 8) + 'px';
+    piece.style.animationDuration = (2 + Math.random() * 2) + 's';
+    piece.style.opacity = (0.7 + Math.random() * 0.3).toFixed(2);
+    document.body.appendChild(piece);
+    // Remove piece after animation completes
+    setTimeout(() => piece.remove(), 4000);
+  }
+}
 
 function addLog(message, type = 'info') {
   const logEntry = document.createElement('div');
@@ -111,29 +157,3 @@ function addLog(message, type = 'info') {
   logOutput.appendChild(logEntry);
   logOutput.scrollTop = logOutput.scrollHeight;
 }
-
-// Text preview modal handling
-const textPreviewModal = document.getElementById('textPreviewModal');
-const transcriptEditor = document.getElementById('transcriptEditor');
-const confirmEditBtn = document.getElementById('confirmEditBtn');
-const cancelEditBtn = document.getElementById('cancelEditBtn');
-
-window.electronAPI.onShowTextPreview((text) => {
-  transcriptEditor.value = text;
-  textPreviewModal.style.display = 'flex';
-  addLog('📝 Translation ready for review', 'info');
-});
-
-confirmEditBtn.addEventListener('click', () => {
-  const editedText = transcriptEditor.value;
-  window.electronAPI.sendEditedText(editedText);
-  textPreviewModal.style.display = 'none';
-  addLog('✅ Text confirmed, continuing processing...', 'success');
-});
-
-cancelEditBtn.addEventListener('click', () => {
-  // Send original text back
-  window.electronAPI.sendEditedText(transcriptEditor.value);
-  textPreviewModal.style.display = 'none';
-  addLog('↩️ Continuing with original text', 'info');
-});
