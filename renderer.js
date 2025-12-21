@@ -21,14 +21,6 @@ selectVideoBtn.addEventListener('click', async () => {
     selectedVideoPath = path;
     videoPathInput.value = path;
     selectOutputBtn.disabled = false;
-    
-    // Auto-suggest output path
-    const outputPath = await window.electronAPI.selectOutput(path);
-    if (outputPath) {
-      selectedOutputPath = outputPath;
-      outputPathInput.value = outputPath;
-      processBtn.disabled = false;
-    }
   }
 });
 

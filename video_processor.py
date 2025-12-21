@@ -4,9 +4,56 @@ import subprocess
 import boto3
 import time
 import json
+from pathlib import Path
 
 # Set environment variables for UTF-8 encoding
 os.environ['PYTHONIOENCODING'] = 'utf-8'
+
+def load_dotenv_simple():
+    """Minimal .env loader to populate os.environ before AWS clients.
+    Supports KEY=VALUE pairs; ignores comments and blank lines."""
+    try:
+        script_dir = Path(__file__).resolve().parent
+        env_path = script_dir / '.env'
+        if not env_path.exists():
+            return
+        for line in env_path.read_text(encoding='utf-8', errors='ignore').splitlines():
+            s = line.strip()
+            if not s or s.startswith('#'):
+                continue
+            if '=' in s:
+                key, val = s.split('=', 1)
+                key = key.strip()
+                val = val.strip().strip('"')
+                # Don't overwrite already-set env vars
+                if key and key not in os.environ:
+                    os.environ[key] = val
+    except Exception:
+        # Non-fatal; continue without .env
+        pass
+
+# Prefer python-dotenv if available; fallback to simple loader
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _DOTENV_AVAILABLE = True
+except Exception:
+    _load_dotenv = None
+    _DOTENV_AVAILABLE = False
+
+def load_env():
+    """Load environment variables from .env next to this script.
+    Uses python-dotenv when available, otherwise the simple loader."""
+    try:
+        script_dir = Path(__file__).resolve().parent
+        env_path = script_dir / '.env'
+        if _DOTENV_AVAILABLE and _load_dotenv:
+            # Explicit path to avoid cwd differences
+            _load_dotenv(dotenv_path=env_path)
+        else:
+            load_dotenv_simple()
+    except Exception:
+        # Fallback to simple loader if anything goes wrong
+        load_dotenv_simple()
 
 def print_progress(message):
     """Print progress messages that will be captured by Electron"""
@@ -28,6 +75,46 @@ def transcribe_to_translate_lang(transcribe_code):
     
     return base_lang
 
+def translate_with_bedrock(text, source_lang, target_lang):
+    """Translate using Amazon Bedrock via the unified converse API.
+
+    Env vars:
+      - MODEL_ID (e.g., 'anthropic.claude-3-sonnet-20240229-v1:0', 'meta.llama3-70b-instruct')
+    """
+    model_id = os.getenv('MODEL_ID')
+    if not model_id:
+        raise Exception('MODEL_ID is not set in .env')
+
+    # Always use eu-central-1 (Frankfurt) for all AWS services
+    client = boto3.client('bedrock-runtime', region_name='eu-central-1')
+
+    prompt = (
+        f"Translate the following text from {source_lang} to {target_lang}. "
+        f"Preserve meaning, punctuation, numerals, and any **bold** markers exactly. "
+        f"This text is for subtitles; keep phrasing concise. Return only translated text.\n\n{text}"
+    )
+
+    messages = [
+        {"role": "user", "content": [{"text": prompt}]}
+    ]
+
+    resp = client.converse(
+        modelId=model_id,
+        messages=messages,
+        inferenceConfig={"maxTokens": 4000, "temperature": 0.2}
+    )
+
+    output = resp.get('output', {})
+    msg = output.get('message', {})
+    content = msg.get('content', [])
+    translated_parts = []
+    for part in content:
+        t = part.get('text')
+        if t:
+            translated_parts.append(t)
+    translated = '\n'.join(translated_parts).strip()
+    return translated or text
+
 def main():
     if len(sys.argv) != 5:
         print("Usage: video_processor.py <input_video> <output_video> <origin_lang> <destination_lang>")
@@ -40,6 +127,8 @@ def main():
     
     
     try:
+        # Load .env before creating AWS clients
+        load_env()
         # ===== YOUR PIPELINE STARTS HERE =====
         
         print_progress("Starting video processing...")
@@ -62,6 +151,7 @@ def main():
         
         # Step 2: Transcribe audio to text
         print_progress("Transcribing audio...")
+        # Always use eu-central-1 (Frankfurt) for all AWS services
         region = 'eu-central-1'
         transcriber = boto3.client('transcribe', region_name=region)
         
@@ -79,12 +169,13 @@ def main():
         bucket_name = "mozhis-video-translator-bucket"
         s3_key = "input_audio.mp3"
         
-        # Create bucket with location constraint for non us-east-1 regions
+        # Create bucket in eu-central-1 (Frankfurt) with location constraint
         try:
             s3.create_bucket(
                 Bucket=bucket_name,
                 CreateBucketConfiguration={'LocationConstraint': region}
             )
+            
         except s3.exceptions.BucketAlreadyOwnedByYou:
             pass  # Bucket already exists, continue
         except Exception as e:
@@ -132,18 +223,28 @@ def main():
         # Convert Transcribe language code to Translate language code
         translate_source_lang = transcribe_to_translate_lang(origin_lang)
         
-        if translate_source_lang == destination_lang:
+        translation_skipped = translate_source_lang == destination_lang
+        if translation_skipped:
             print_progress("Source and target languages are the same, skipping translation...")
             translated_text = transcription_text
         else:
-            print_progress(f"Translating text to {destination_lang}...")
-            translator = boto3.client('translate', region_name=region)
-            response = translator.translate_text(
-                Text=transcription_text,
-                SourceLanguageCode=translate_source_lang,
-                TargetLanguageCode=destination_lang
-            )
-            translated_text = response.get('TranslatedText')
+            model_id = os.getenv('MODEL_ID', 'unset')
+            print_progress(f"Translating text to {destination_lang} using Bedrock model {model_id}...")
+            try:
+                translated_text = translate_with_bedrock(
+                    transcription_text,
+                    translate_source_lang,
+                    destination_lang
+                )
+            except Exception as bedrock_err:
+                print_progress(f"Bedrock translation failed, falling back to AWS Translate: {bedrock_err}")
+                translator = boto3.client('translate', region_name=region)
+                response = translator.translate_text(
+                    Text=transcription_text,
+                    SourceLanguageCode=translate_source_lang,
+                    TargetLanguageCode=destination_lang
+                )
+                translated_text = response.get('TranslatedText')
         
         # Send translated text for user preview/editing
         # Format: PREVIEW_TEXT::<text>
@@ -160,20 +261,21 @@ def main():
         edited_text = edited_text.replace("EDITED_TEXT::", "", 1)
         translated_text = edited_text  # Use the edited version
         
-        # Step 4: Create subtitle file
+    
+            # Step 4: Create subtitle file
         print_progress("Creating subtitles...")
 
         # Get word-level timestamps from transcription
         items = transcript_data['results']['items']
-        
-        # Group words into subtitle segments (every 5-10 words or by punctuation)
+
+        # Group words into subtitle segments (every 10-12 words or by punctuation for natural reading)
         subtitle_file = "temp_subtitles.srt"
         subtitles = []
         current_words = []
         current_start = None
         current_end = None
         subtitle_index = 1
-        
+
         for item in items:
             if item['type'] == 'pronunciation':
                 word = item['alternatives'][0]['content']
@@ -186,8 +288,8 @@ def main():
                 current_words.append(word)
                 current_end = end_time
                 
-                # Create a subtitle segment every 10 words or at punctuation
-                if len(current_words) >= 10:
+                # Create a subtitle segment every 10-12 words or at strong punctuation
+                if len(current_words) >= 12:
                     subtitles.append({
                         'index': subtitle_index,
                         'start': current_start,
@@ -213,7 +315,7 @@ def main():
                     subtitle_index += 1
                     current_words = []
                     current_start = None
-        
+
         # Add remaining words
         if current_words:
             subtitles.append({
@@ -222,16 +324,16 @@ def main():
                 'end': current_end,
                 'words': ' '.join(current_words)
             })
-        
-        # Split translated text into segments matching subtitle count
+            
+        # Prepare segmented text
         translated_words = translated_text.split()
         words_per_subtitle = max(1, len(translated_words) // len(subtitles))
         
-        # Convert **bold** markers to SRT bold tags <b></b>
+        # Convert **markup** markers to a colored span for emphasis
         def format_subtitle_text(text, is_rtl=False):
-            # Replace **text** with <b>text</b>
+            # Replace **text** with colored font tag
             import re
-            text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+            text = re.sub(r'\*\*(.+?)\*\*', r'<font color="#FFD700">\1</font>', text)
             
             # Add RTL marker for right-to-left languages
             if is_rtl:
@@ -248,13 +350,16 @@ def main():
         with open(subtitle_file, 'w', encoding='utf-8') as f:
             start_idx = 0
             for i, subtitle in enumerate(subtitles):
-                # Get corresponding translated words
-                end_idx = min(start_idx + words_per_subtitle, len(translated_words))
-                if i == len(subtitles) - 1:  # Last subtitle gets remaining words
-                    end_idx = len(translated_words)
-                
-                subtitle_text = ' '.join(translated_words[start_idx:end_idx])
-                subtitle_text = format_subtitle_text(subtitle_text, is_rtl)
+                # Use original segment text when translation is skipped for better alignment
+                if translation_skipped:
+                    subtitle_text = format_subtitle_text(subtitle['words'], is_rtl)
+                else:
+                    # Get corresponding translated words
+                    end_idx = min(start_idx + words_per_subtitle, len(translated_words))
+                    if i == len(subtitles) - 1:  # Last subtitle gets remaining words
+                        end_idx = len(translated_words)
+                    subtitle_text = ' '.join(translated_words[start_idx:end_idx])
+                    subtitle_text = format_subtitle_text(subtitle_text, is_rtl)
                 
                 # Format time as HH:MM:SS,mmm
                 def format_time(seconds):
@@ -269,7 +374,8 @@ def main():
                 f.write(f"{format_time(subtitle['start'])} --> {format_time(subtitle['end'])}\n")
                 f.write(f"{subtitle_text}\n\n")
                 
-                start_idx = end_idx
+                if not translation_skipped:
+                    start_idx = end_idx
         
         # Step 5: Add subtitles to video
         print_progress("Adding subtitles to video...")

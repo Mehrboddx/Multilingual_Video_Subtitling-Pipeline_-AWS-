@@ -89,23 +89,26 @@ ipcMain.handle('process-video', async (event, { inputPath, outputPath, sourceLan
     let errorData = '';
     let waitingForUserInput = false;
 
-    // Capture stdout (for progress updates)
+    // Capture stdout (for progress updates and preview requests)
     pythonProcess.stdout.on('data', (data) => {
-      const message = data.toString().trim();
-      outputData += message + '\n';
-      
-      // Check if this is a preview request
-      if (message.startsWith('PREVIEW_TEXT::')) {
-        const transcriptText = message.replace('PREVIEW_TEXT::', '');
-        waitingForUserInput = true;
-        
-        // Send preview to frontend and wait for edited text
-        mainWindow.webContents.send('show-text-preview', transcriptText);
-        return;
+      const chunk = data.toString();
+      outputData += chunk;
+
+      // Split chunk into individual lines to handle multiple messages per event
+      const lines = chunk.split(/\r?\n/).filter(l => l.trim().length > 0);
+      for (const line of lines) {
+        // Check if this is a preview request anywhere within the chunk
+        if (line.startsWith('PREVIEW_TEXT::')) {
+          const transcriptText = line.slice('PREVIEW_TEXT::'.length);
+          waitingForUserInput = true;
+          // Send preview to frontend and wait for edited text
+          mainWindow.webContents.send('show-text-preview', transcriptText);
+          continue;
+        }
+
+        // Send progress updates to frontend for normal lines
+        mainWindow.webContents.send('processing-progress', line.trim());
       }
-      
-      // Send progress updates to frontend
-      mainWindow.webContents.send('processing-progress', message);
     });
 
     // Handle edited text from user
