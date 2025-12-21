@@ -1,3 +1,4 @@
+from http import client
 import sys
 import os
 import subprocess
@@ -49,43 +50,39 @@ def print_progress(message):
     if isinstance(message, bytes):
         message = message.decode('utf-8', errors='ignore')
     print(message, flush=True)
+def success_message():
+    client = boto3.client('bedrock-runtime', region_name='eu-central-1')
+    model_id = "anthropic.claude-3-5-sonnet-20240620-v1:0"
 
-def generate_success_message(output_video):
-    """Generate a poetic success message using Bedrock"""
-    try:
-        model_id = os.getenv('BEDROCK_MODEL_ID')
-
-
-        client = boto3.client('bedrock-runtime', region_name='eu-central-1')
-
-        prompt = (
-            f"Write a success message in a poetic way as this is my girlfriend's personal application. "
-            f"It should be complimenting her in a loving way. Keep it brief and sweet. "
-            f"The message is should for an example be like: 'Video subtitled for the loveliest girl in the world! Saved to: {output_video}' "
-        )
-
-        messages = [{"role": "user", "content": [{"text": prompt}]}]
-
-        resp = client.converse(
-            modelId=model_id,
-            messages=messages,
-            inferenceConfig={"maxTokens": 400, "temperature": 0.7}
-        )
-
-        output = resp.get('output', {})
-        msg = output.get('message', {})
-        content = msg.get('content', [])
-        text = content[0].get('text') if content else ""
-        
-        if text:
-            return f"{text}\n\nSaved to: {output_video}"
-        else:
-            return f"Your video has been translated successfully! Saved to: {output_video}"
-            
-    except Exception as e:
-        print_progress(f"Note: Could not generate custom message ({str(e)}), using default")
-        return f"Your video has been translated successfully! Saved to: {output_video}"
-
+    # Build the request body for chat
+    prompt = "Create a charming success message announcing that a video has been subtitled. Keep it sweet romantic and poetic. Avoid names like 'my love' or 'my darling' I prefer calling her that myself. Maximum 20 words. Just output the message, nothing else."
+    
+    messages = [
+        {
+            "role": "user",
+            "content": [{"text": prompt}]
+        }
+    ]
+    
+    system = [
+        {
+            "text": "You are a helpful assistant that creates charming, concise success messages. Keep responses short and direct."
+        }
+    ]
+    
+    response = client.converse(
+        modelId=model_id,
+        messages=messages,
+        system=system,
+        inferenceConfig={
+            "maxTokens": 300, 
+            "temperature": 0.7, 
+            "topP": 0.6
+        },
+    )
+    
+    # Extract the response text from the converse API response
+    return response['output']['message']['content'][0]['text']
 def transcribe_to_translate_lang(transcribe_code):
     base_lang = transcribe_code.split('-')[0]
     if transcribe_code == 'zh-CN':
@@ -93,38 +90,6 @@ def transcribe_to_translate_lang(transcribe_code):
     elif transcribe_code == 'zh-TW':
         return 'zh-TW'
     return base_lang
-
-def translate_with_bedrock(text, source_lang, target_lang):
-    model_id = os.getenv('MODEL_ID')
-    if not model_id:
-        raise Exception('MODEL_ID is not set in .env')
-
-    client = boto3.client('bedrock-runtime', region_name='eu-central-1')
-
-    prompt = (
-        f"Translate the following text from {source_lang} to {target_lang}. "
-        f"Preserve meaning, punctuation, numerals, and any **bold** markers exactly. "
-        f"This text is for subtitles; keep phrasing concise. Return only translated text.\n\n{text}"
-    )
-
-    messages = [{"role": "user", "content": [{"text": prompt}]}]
-
-    resp = client.converse(
-        modelId=model_id,
-        messages=messages,
-        inferenceConfig={"maxTokens": 4000, "temperature": 0.2}
-    )
-
-    output = resp.get('output', {})
-    msg = output.get('message', {})
-    content = msg.get('content', [])
-    translated_parts = []
-    for part in content:
-        t = part.get('text')
-        if t:
-            translated_parts.append(t)
-    translated = '\n'.join(translated_parts).strip()
-    return translated or text
 
 def parse_srt_file(filepath):
     """Parse SRT file and return list of subtitle objects"""
@@ -163,7 +128,7 @@ def parse_srt_file(filepath):
 
 def main():
     if len(sys.argv) != 5:
-        print("Usage: video_processor.py <input_video> <output_video> <origin_lang> <destination_lang>")
+        print("ERROR: Invalid arguments. Usage: video_processor.py <input_video> <output_video> <origin_lang> <destination_lang>", file=sys.stderr)
         sys.exit(1)
     
     input_video = sys.argv[1]
@@ -231,7 +196,8 @@ def main():
             if job_status == 'COMPLETED':
                 break
             elif job_status == 'FAILED':
-                raise Exception("Transcription job failed")
+                failure_reason = status['TranscriptionJob'].get('FailureReason', 'Unknown reason')
+                raise Exception(f"Transcription failed: {failure_reason}")
             
             time.sleep(5)
         
@@ -304,26 +270,17 @@ def main():
             print_progress("Source and target languages are the same, skipping translation...")
             translated_text = '\n'.join([s['words'] for s in subtitles])
         else:
-            model_id = os.getenv('MODEL_ID', 'unset')
             # Combine segments with newlines to preserve structure
             full_text = '\n'.join([s['words'] for s in subtitles])
-            print_progress(f"Translating text to {destination_lang} using Bedrock model {model_id}...")
+            print_progress(f"Translating text to {destination_lang} using AWS Translate...")
             
-            try:
-                translated_text = translate_with_bedrock(
-                    full_text,
-                    translate_source_lang,
-                    destination_lang
-                )
-            except Exception as bedrock_err:
-                print_progress(f"Bedrock translation failed, falling back to AWS Translate: {bedrock_err}")
-                translator = boto3.client('translate', region_name=region)
-                response = translator.translate_text(
-                    Text=full_text,
-                    SourceLanguageCode=translate_source_lang,
-                    TargetLanguageCode=destination_lang
-                )
-                translated_text = response.get('TranslatedText')
+            translator = boto3.client('translate', region_name=region)
+            response = translator.translate_text(
+                Text=full_text,
+                SourceLanguageCode=translate_source_lang,
+                TargetLanguageCode=destination_lang
+            )
+            translated_text = response.get('TranslatedText')
         
         print_progress("Translation complete. Preparing preview...")
         
@@ -371,17 +328,18 @@ def main():
         confirmation = input()
         
         if confirmation != "EDITOR_CONFIRMED":
-            raise Exception("Editor not confirmed")
+            raise Exception("Subtitle editing was not confirmed or was cancelled")
         
         print_progress("Editor confirmed, processing final video...")
         
         # Read edited subtitles from the first editor session
         subtitle_data = parse_srt_file(subtitle_file)
         
-        # Convert to SRT with formatting
+        # Convert to SRT with formatting (using ASS override tags for bold)
         def format_subtitle_text(text, is_rtl=False):
             import re
-            text = re.sub(r'\*\*(.+?)\*\*', r'<font color="#FFD700">\1</font>', text)
+            # Convert **bold** to ASS override tags for colored bold text
+            text = re.sub(r'\*\*(.+?)\*\*', r'{\\c&H00D7FF&\\b1}\1{\\b0\\c}', text)
             if is_rtl:
                 text = '\u200F' + text
             return text
@@ -449,8 +407,14 @@ def main():
         except Exception as cleanup_error:
             print_progress(f"Warning: S3 cleanup error (non-critical): {str(cleanup_error)}")
         
-        # Generate and emit custom success message
-        msg = generate_success_message(output_video)
+        # Generate and emit custom success message using Bedrock
+        try:
+            bedrock_msg = success_message()
+            msg = f"{bedrock_msg}\n\nSaved to: {output_video}"
+        except Exception as e:
+            print_progress(f"Note: Could not generate custom message ({str(e)}), using default")
+            msg = f"✨ Your subtitled video is ready! ✨\n\nSaved to: {output_video}"
+        
         print(f"SUCCESS_MESSAGE::{msg}", flush=True)
 
         print_progress("Video processing complete!")
