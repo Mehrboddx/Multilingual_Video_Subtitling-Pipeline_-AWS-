@@ -24,6 +24,7 @@ function createWindow() {
   });
 
   mainWindow.loadFile('index.html');
+  
   // Open maximized for better UX
   mainWindow.maximize();
 }
@@ -127,7 +128,32 @@ ipcMain.handle('select-output', async (event, inputPath) => {
 // Process video with editor integration
 ipcMain.handle('process-video', async (event, { inputPath, outputPath, sourceLang, targetLang }) => {
   return new Promise((resolve, reject) => {
-    const pythonScript = path.join(__dirname, 'video_processor.py');
+    // Determine if we're running in development or production
+    const isDev = !app.isPackaged;
+    
+    // In production, use the bundled .exe; in dev, use Python script
+    let command, args;
+    if (isDev) {
+      // Development: run Python script
+      command = 'python';
+      args = [
+        path.join(__dirname, 'video_processor.py'),
+        inputPath,
+        outputPath,
+        sourceLang,
+        targetLang
+      ];
+    } else {
+      // Production: use bundled executable
+      command = path.join(process.resourcesPath, 'video_processor.exe');
+      args = [
+        inputPath,
+        outputPath,
+        sourceLang,
+        targetLang
+      ];
+    }
+    
     const fontInfoPath = path.join(app.getPath('userData'), 'font-info.json');
     try {
       if (fs.existsSync(fontInfoPath)) fs.unlinkSync(fontInfoPath);
@@ -138,13 +164,15 @@ ipcMain.handle('process-video', async (event, { inputPath, outputPath, sourceLan
     // Store inputPath in a variable accessible to handlers
     let currentVideoPath = inputPath;
     
-    const pythonProcess = spawn('python', [
-      pythonScript,
-      inputPath,
-      outputPath,
-      sourceLang,
-      targetLang
-    ], {
+    // Log the command being executed
+    console.log('=== Python Process Debug Info ===');
+    console.log('Command:', command);
+    console.log('Args:', args);
+    console.log('Is Dev Mode:', isDev);
+    console.log('Resources Path:', process.resourcesPath);
+    console.log('=================================');
+    
+    const pythonProcess = spawn(command, args, {
       env: { ...process.env, PYTHONIOENCODING: 'utf-8', FONT_INFO_PATH: fontInfoPath },
       encoding: 'utf8'
     });
@@ -268,10 +296,15 @@ ipcMain.handle('process-video', async (event, { inputPath, outputPath, sourceLan
     ipcMain.on('editor-cancelled', onEditorCancelled);
 
     pythonProcess.stderr.on('data', (data) => {
-      errorData += data.toString();
+      const errorChunk = data.toString();
+      errorData += errorChunk;
+      console.error('Python stderr:', errorChunk);
+      mainWindow.webContents.send('processing-progress', `[ERROR] ${errorChunk}`);
     });
 
     pythonProcess.on('close', (code) => {
+      console.log('Python process exited with code:', code);
+      console.log('Full stderr output:', errorData);
       if (code === 0) {
         // Fallback: parse success message from aggregated output if not captured live
         if (!successMessage && outputData) {
@@ -282,7 +315,10 @@ ipcMain.handle('process-video', async (event, { inputPath, outputPath, sourceLan
         }
         resolve({ success: true, output: outputData, successMessage });
       } else {
-        reject({ success: false, error: errorData });
+      console.error('Failed to start Python process:', error);
+      console.error('Command was:', command);
+      console.error('Args were:', args);
+      reject({ success: false, error: `Failed to start process: ${error.message}`});
       }
     });
 

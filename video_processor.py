@@ -9,9 +9,18 @@ from pathlib import Path
 
 os.environ['PYTHONIOENCODING'] = 'utf-8'
 
+def get_script_directory():
+    """Get the directory where the script/exe is located, works for both dev and packaged."""
+    if getattr(sys, 'frozen', False):
+        # Running as compiled executable
+        return Path(sys.executable).parent
+    else:
+        # Running as script
+        return Path(__file__).resolve().parent
+
 def load_dotenv_simple():
     try:
-        script_dir = Path(__file__).resolve().parent
+        script_dir = get_script_directory()
         env_path = script_dir / '.env'
         if not env_path.exists():
             return
@@ -37,14 +46,36 @@ except Exception:
 
 def load_env():
     try:
-        script_dir = Path(__file__).resolve().parent
+        script_dir = get_script_directory()
         env_path = script_dir / '.env'
+        
+        # Debug output
+        print(f"DEBUG - Script directory: {script_dir}", flush=True)
+        print(f"DEBUG - Looking for .env at: {env_path}", flush=True)
+        print(f"DEBUG - .env exists: {env_path.exists()}", flush=True)
+        
         if _DOTENV_AVAILABLE and _load_dotenv:
             _load_dotenv(dotenv_path=env_path)
         else:
             load_dotenv_simple()
-    except Exception:
+    except Exception as e:
+        print(f"DEBUG - Error loading .env: {e}", flush=True)
         load_dotenv_simple()
+
+def get_aws_credentials():
+    """Get AWS credentials from environment variables."""
+    creds = {
+        'aws_access_key_id': os.getenv('AWS_ACCESS_KEY_ID'),
+        'aws_secret_access_key': os.getenv('AWS_SECRET_ACCESS_KEY'),
+        'region_name': os.getenv('AWS_DEFAULT_REGION', 'eu-central-1')
+    }
+    
+    # Debug output (hide most of the keys for security)
+    print(f"DEBUG - AWS Access Key loaded: {creds['aws_access_key_id'][:8] if creds['aws_access_key_id'] else 'None'}...", flush=True)
+    print(f"DEBUG - AWS Secret Key loaded: {'Yes' if creds['aws_secret_access_key'] else 'No'}", flush=True)
+    print(f"DEBUG - AWS Region: {creds['region_name']}", flush=True)
+    
+    return creds
 
 def print_progress(message):
     if isinstance(message, bytes):
@@ -52,7 +83,8 @@ def print_progress(message):
     print(message, flush=True)
 def success_message():
     import random
-    client = boto3.client('bedrock-runtime', region_name='eu-central-1')
+    aws_creds = get_aws_credentials()
+    client = boto3.client('bedrock-runtime', **aws_creds)
     model_id = "anthropic.claude-3-5-sonnet-20240620-v1:0"
 
     # Randomize the prompt style for more variety
@@ -175,8 +207,9 @@ def main():
         
         # Step 2: Transcribe
         print_progress("Transcribing audio...")
-        region = 'eu-central-1'
-        transcriber = boto3.client('transcribe', region_name=region)
+        aws_creds = get_aws_credentials()
+        region = aws_creds['region_name']
+        transcriber = boto3.client('transcribe', **aws_creds)
         
         import datetime
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -187,7 +220,7 @@ def main():
         except:
             pass
             
-        s3 = boto3.client('s3', region_name=region)
+        s3 = boto3.client('s3', **aws_creds)
         bucket_name = "mozhis-video-translator-bucket"
         s3_key = "input_audio.mp3"
         
@@ -299,7 +332,7 @@ def main():
             full_text = '\n'.join([s['words'] for s in subtitles])
             print_progress(f"Translating text to {destination_lang} using AWS Translate...")
             
-            translator = boto3.client('translate', region_name=region)
+            translator = boto3.client('translate', **aws_creds)
             response = translator.translate_text(
                 Text=full_text,
                 SourceLanguageCode=translate_source_lang,

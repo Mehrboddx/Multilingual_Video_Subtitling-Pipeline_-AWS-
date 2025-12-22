@@ -1,10 +1,16 @@
 {
   "name": "video-translator",
   "version": "1.0.0",
+  "description": "AI-powered video translator with subtitle editor",
   "main": "main.js",
+  "author": "Your Name",
+  "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder"
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux"
   },
   "devDependencies": {
     "electron": "^28.0.0",
@@ -12,15 +18,65 @@
   },
   "build": {
     "appId": "com.videotranslator.app",
+    "productName": "Video Translator",
+    "copyright": "Copyright © 2025",
+    "directories": {
+      "output": "dist"
+    },
     "files": [
       "**/*",
-      "python/**/*"
+      "!**/.git",
+      "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
+      "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
+      "!**/node_modules/*.d.ts",
+      "!**/node_modules/.bin",
+      "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}",
+      "!.editorconfig",
+      "!**/._*",
+      "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}",
+      "!**/{__pycache__,thumbs.db,.flowconfig,.idea,.vs,.nyc_output}",
+      "!outputs/**/*",
+      "!myVenv/**/*",
+      "!temp_*"
     ],
     "extraResources": [
       {
-        "from": "python",
-        "to": "python"
-      }
-    ]
+        "from": "ffmpeg",
+        "to": "ffmpeg",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "dist/video_processor.exe",
+        "to": "video_processor.exe"
+      },
+      ".env.example",
+      "AWS_SETUP_GUIDE.md",
+      "QUICK_START.md"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Video Translator"
+    },
+    "mac": {
+      "category": "public.app-category.video",
+      "target": ["dmg"],
+      "icon": "icon.icns"
+    },
+    "linux": {
+      "target": ["AppImage"],
+      "category": "Video"
+    }
   }
 }
