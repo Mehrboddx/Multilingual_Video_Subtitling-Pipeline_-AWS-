@@ -128,6 +128,52 @@ body {
   display: block;
 }
 
+/* Emphasized text styling */
+.subtitle-overlay .emphasized {
+  color: #FFD700;
+  font-size: 1.35em;
+  font-weight: 900;
+  text-shadow: 
+    0 0 10px rgba(255, 215, 0, 0.8),
+    0 0 20px rgba(255, 215, 0, 0.6),
+    2px 2px 4px rgba(0, 0, 0, 0.9),
+    -1px -1px 2px rgba(0, 0, 0, 0.5);
+  letter-spacing: 0.05em;
+  transform: scale(1.05);
+  display: inline-block;
+  animation: emphasize-pulse 2s ease-in-out infinite;
+}
+
+@keyframes emphasize-pulse {
+  0%, 100% {
+    text-shadow: 
+      0 0 10px rgba(255, 215, 0, 0.8),
+      0 0 20px rgba(255, 215, 0, 0.6),
+      2px 2px 4px rgba(0, 0, 0, 0.9),
+      -1px -1px 2px rgba(0, 0, 0, 0.5);
+  }
+  50% {
+    text-shadow: 
+      0 0 15px rgba(255, 215, 0, 1),
+      0 0 30px rgba(255, 215, 0, 0.8),
+      2px 2px 4px rgba(0, 0, 0, 0.9),
+      -1px -1px 2px rgba(0, 0, 0, 0.5);
+  }
+}
+
+/* Emphasize button styling */
+.btn-emphasize {
+  background: linear-gradient(135deg, #FFD700 0%, #FFA500 100%) !important;
+  color: #000 !important;
+  font-weight: bold;
+  font-size: 1.1em;
+}
+
+.btn-emphasize:hover {
+  background: linear-gradient(135deg, #FFE55C 0%, #FFB733 100%) !important;
+  transform: scale(1.05);
+}
+
 .playback-controls {
   display: flex;
   align-items: center;

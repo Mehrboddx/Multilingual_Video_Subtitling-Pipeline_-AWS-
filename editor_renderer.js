@@ -57,6 +57,7 @@ const deleteSubtitleBtn = document.getElementById('deleteSubtitleBtn');
 // Formatting buttons
 const boldBtn = document.getElementById('boldBtn');
 const italicBtn = document.getElementById('italicBtn');
+const emphasizeBtn = document.getElementById('emphasizeBtn');
 const clearFormatBtn = document.getElementById('clearFormatBtn');
 
 // Check if all elements are found
@@ -67,7 +68,7 @@ const elements = {
   saveBtn, cancelBtn, addSubtitleBtn, subtitleOverlay,
   subtitleTextInput, subtitleStartInput, subtitleEndInput, subtitleDurationInput,
   saveEditBtn, cancelEditBtn, deleteSubtitleBtn,
-  boldBtn, italicBtn, clearFormatBtn,
+  boldBtn, italicBtn, emphasizeBtn, clearFormatBtn,
   fontFileInput, fontNameLabel
 };
 
@@ -503,6 +504,9 @@ function updateSubtitleOverlay() {
     // Display subtitle with formatting
     let displayText = currentSubtitle.text;
     
+    // Convert ~~text~~ to emphasized (must be before italic to avoid conflicts)
+    displayText = displayText.replace(/~~(.*?)~~/g, '<span class="emphasized">$1</span>');
+    
     // Convert **text** to bold
     displayText = displayText.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
     
@@ -699,6 +703,9 @@ document.addEventListener('keydown', (e) => {
       } else if (e.key === 'i' || e.key === 'I') {
         e.preventDefault();
         italicBtn.click();
+      } else if (e.key === 'e' || e.key === 'E') {
+        e.preventDefault();
+        emphasizeBtn.click();
       }
     }
     return;
@@ -747,8 +754,10 @@ function wrapSelectedText(prefix, suffix) {
 }
 
 function removeFormatting(text) {
-  // Remove all ** ** markers
-  return text.replace(/\*\*(.*?)\*\*/g, '$1');
+  // Remove all formatting markers
+  return text.replace(/\*\*(.*?)\*\*/g, '$1')
+             .replace(/\*(.*?)\*/g, '$1')
+             .replace(/~~(.*?)~~/g, '$1');
 }
 
 // Formatting button handlers
@@ -758,6 +767,10 @@ boldBtn.addEventListener('click', () => {
 
 italicBtn.addEventListener('click', () => {
   wrapSelectedText('*', '*');
+});
+
+emphasizeBtn.addEventListener('click', () => {
+  wrapSelectedText('~~', '~~');
 });
 
 clearFormatBtn.addEventListener('click', () => {

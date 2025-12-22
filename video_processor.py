@@ -51,11 +51,20 @@ def print_progress(message):
         message = message.decode('utf-8', errors='ignore')
     print(message, flush=True)
 def success_message():
+    import random
     client = boto3.client('bedrock-runtime', region_name='eu-central-1')
     model_id = "anthropic.claude-3-5-sonnet-20240620-v1:0"
 
-    # Build the request body for chat
-    prompt = "Create a charming success message announcing that a video has been subtitled. Keep it sweet romantic and poetic. Avoid names like 'my love' or 'my darling' I prefer calling her that myself. Maximum 20 words. Just output the message, nothing else."
+    # Randomize the prompt style for more variety
+    prompt_styles = [
+        "Create a charming success message announcing that a video has been subtitled. Keep it sweet romantic and poetic. Avoid names like 'my love' or 'my darling' I prefer calling her that myself. Maximum 20 words. Just output the message, nothing else.",
+        "Write a heartfelt message celebrating that subtitles are ready for a video. Make it romantic and poetic, avoiding generic endearments. 20 words max. Message only.",
+        "Generate a sweet, poetic announcement that video subtitling is complete. Keep it romantic without using 'my love' or 'darling'. Maximum 20 words. Just the message.",
+        "Compose a tender success message for completed video subtitles. Be romantic and poetic, but skip common pet names. 20 words maximum. Output only the message.",
+        "Craft a loving message about video subtitles being finished. Make it poetic and sweet, avoiding 'my love' or 'my darling'. Max 20 words. Message only.",
+    ]
+    
+    prompt = random.choice(prompt_styles)
     
     messages = [
         {
@@ -76,8 +85,8 @@ def success_message():
         system=system,
         inferenceConfig={
             "maxTokens": 300, 
-            "temperature": 0.7, 
-            "topP": 0.6
+            "temperature": 1.0,  
+            "topP": 0.9          
         },
     )
     
@@ -315,7 +324,7 @@ def main():
                 'end': float(subtitle['end'])
             })
         
-        # Write initial SRT file
+        # Write initial SRT file for editor (SRT is simpler for editing)
         subtitle_file = "temp_subtitles.srt"
         with open(subtitle_file, 'w', encoding='utf-8') as f:
             for i, sub in enumerate(subtitle_data_for_editor):
@@ -354,8 +363,29 @@ def main():
         # Convert to SRT with formatting (using ASS override tags for bold)
         def format_subtitle_text(text, is_rtl=False):
             import re
-            # Convert **bold** to ASS override tags for colored bold text
-            text = re.sub(r'\*\*(.+?)\*\*', r'{\\c&H00D7FF&\\b1}\1{\\b0\\c}', text)
+            # FFmpeg's subtitles filter supports ASS override tags in SRT files
+            # Tags must appear as literal backslashes in the file: {\fs32}
+            # ASS color format is BGR: &HBBGGRR& so yellow RGB(255,215,0) = &H00D7FF&
+            
+            # Convert ~~emphasis~~ to emphasized text: larger, yellow, with glow
+            # Using raw string r'...' for replacement with \\ for literal backslash and \1 for backreference
+            text = re.sub(
+                r'~~(.+?)~~',
+                r'{\\fs32\\1c&H00D7FF&\\3c&H00A5FF&\\bord3\\shad2\\b1}\1{\\r}',
+                text
+            )
+            # Convert **bold** to colored bold text
+            text = re.sub(
+                r'\*\*(.+?)\*\*',
+                r'{\\c&H00D7FF&\\b1}\1{\\b0\\c&HFFFFFF&}',
+                text
+            )
+            # Convert *italic* to italic text
+            text = re.sub(
+                r'\*(.+?)\*',
+                r'{\\i1}\1{\\i0}',
+                text
+            )
             if is_rtl:
                 text = '\u200F' + text
             return text
@@ -370,23 +400,7 @@ def main():
             e = max(s + 0.01, end_val + subtitle_offset)
             return s, e
 
-        with open(subtitle_file, 'w', encoding='utf-8') as f:
-            for i, sub in enumerate(subtitle_data):
-                subtitle_text = format_subtitle_text(sub['text'], is_rtl)
-                adj_start, adj_end = apply_offset(sub['start'], sub['end'])
-                
-                def format_time(seconds):
-                    hours = int(seconds // 3600)
-                    minutes = int((seconds % 3600) // 60)
-                    secs = int(seconds % 60)
-                    millis = int((seconds % 1) * 1000)
-                    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
-                
-                f.write(f"{i + 1}\n")
-                f.write(f"{format_time(adj_start)} --> {format_time(adj_end)}\n")
-                f.write(f"{subtitle_text}\n\n")
-        
-        # Step 5: Add subtitles to video
+        # Get custom font info before writing ASS file
         font_info_path = os.getenv("FONT_INFO_PATH")
         font_name = "Arial"
         fonts_dir = ""
@@ -397,25 +411,63 @@ def main():
                 font_name = info.get('fontName', font_name)
                 fonts_dir = info.get('fontDir', '') or ''
                 print_progress(f"Using custom font: {font_name}")
+                print_progress(f"Font directory: {fonts_dir}")
             except Exception as font_err:
                 print_progress(f"Warning: could not load font info ({font_err}), falling back to Arial")
                 fonts_dir = ""
                 font_name = "Arial"
+        
+        # Sanitize font name for ASS (remove commas which break the format)
+        font_name_safe = (font_name or "Arial").strip().replace(',', ' ')
 
+        # Convert to ASS format (which properly supports ASS override tags)
+        ass_file = "temp_subtitles.ass"
+        with open(ass_file, 'w', encoding='utf-8') as f:
+            # Write ASS header
+            f.write("[Script Info]\n")
+            f.write("ScriptType: v4.00+\n")
+            f.write("PlayResX: 384\n")
+            f.write("PlayResY: 288\n")
+            f.write("WrapStyle: 0\n\n")
+            
+            f.write("[V4+ Styles]\n")
+            f.write("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n")
+            # Use custom font in the Default style
+            f.write(f"Style: Default,{font_name_safe},24,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,10,10,10,1\n\n")
+            
+            f.write("[Events]\n")
+            f.write("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
+            
+            for i, sub in enumerate(subtitle_data):
+                subtitle_text = format_subtitle_text(sub['text'], is_rtl)
+                adj_start, adj_end = apply_offset(sub['start'], sub['end'])
+                
+                # Debug: Print first subtitle to verify formatting
+                if i == 0:
+                    print_progress(f"DEBUG - First subtitle formatted text: {repr(subtitle_text)}")
+                
+                def format_ass_time(seconds):
+                    hours = int(seconds // 3600)
+                    minutes = int((seconds % 3600) // 60)
+                    secs = seconds % 60
+                    # ASS format uses H:MM:SS.CS where CS is centiseconds (1/100 of a second)
+                    return f"{hours}:{minutes:02d}:{secs:05.2f}"
+                
+                f.write(f"Dialogue: 0,{format_ass_time(adj_start)},{format_ass_time(adj_end)},Default,,0,0,0,,{subtitle_text}\n")
+        
+        # Use ASS file instead of SRT for FFmpeg
+        subtitle_file = ass_file
+        
+        # Step 5: Add subtitles to video with custom font directory
         subtitle_arg = ff_safe(subtitle_file)
         fontsdir_opt = f":fontsdir={ff_quote(ff_safe(fonts_dir))}" if fonts_dir else ""
+        
+        print_progress(f"DEBUG - Fonts directory option: {fontsdir_opt}")
 
-        # Sanitize font name for force_style
-        font_name_safe = (font_name or "Arial").strip()
-        font_name_safe = font_name_safe.replace(',', ' ').replace("'", '').replace('  ', ' ')
-        font_name_safe = font_name_safe.strip()
-
-        force_style = (
-            f"FontName={font_name_safe},"
-            "FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=0,Outline=0,Shadow=0"
-        )
-
-        ffmpeg_filter = f"subtitles={ff_quote(subtitle_arg)}{fontsdir_opt}:force_style={ff_quote(force_style)}"
+        # ASS files don't need force_style, they have their own style definitions
+        ffmpeg_filter = f"subtitles={ff_quote(subtitle_arg)}{fontsdir_opt}"
+        
+        print_progress(f"DEBUG - FFmpeg filter: {ffmpeg_filter}")
 
         print_progress("Adding subtitles to video...")
         subprocess.run([
