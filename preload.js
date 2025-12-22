@@ -19,9 +19,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       callback(data);
     });
   },
-  saveSubtitles: (subtitles) => {
-    console.log('Sending subtitles-saved with', subtitles.length, 'subtitles');
-    ipcRenderer.send('subtitles-saved', subtitles);
+  saveSubtitles: (payload) => {
+    const subtitles = Array.isArray(payload) ? payload : payload?.subtitles;
+    console.log('Sending subtitles-saved with', subtitles ? subtitles.length : 0, 'subtitles');
+    ipcRenderer.send('subtitles-saved', payload);
   },
   cancelEditor: () => {
     console.log('Sending editor-cancelled');

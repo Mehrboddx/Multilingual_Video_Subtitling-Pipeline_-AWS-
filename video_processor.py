@@ -126,6 +126,22 @@ def parse_srt_file(filepath):
     
     return subtitles
 
+
+def ff_safe(path_str: str) -> str:
+    """Escape Windows paths for ffmpeg filter args."""
+    return (
+        path_str
+        .replace('\\', '/')
+        .replace(':', '\\:')
+        .replace("'", "\\'")
+    )
+
+
+def ff_quote(val: str) -> str:
+    """Quote a value for ffmpeg filter args with single quotes."""
+    safe = val.replace("'", "\\'")
+    return f"'{safe}'"
+
 def main():
     if len(sys.argv) != 5:
         print("ERROR: Invalid arguments. Usage: video_processor.py <input_video> <output_video> <origin_lang> <destination_lang>", file=sys.stderr)
@@ -371,10 +387,40 @@ def main():
                 f.write(f"{subtitle_text}\n\n")
         
         # Step 5: Add subtitles to video
+        font_info_path = os.getenv("FONT_INFO_PATH")
+        font_name = "Arial"
+        fonts_dir = ""
+        if font_info_path and os.path.exists(font_info_path):
+            try:
+                with open(font_info_path, 'r', encoding='utf-8') as f:
+                    info = json.load(f)
+                font_name = info.get('fontName', font_name)
+                fonts_dir = info.get('fontDir', '') or ''
+                print_progress(f"Using custom font: {font_name}")
+            except Exception as font_err:
+                print_progress(f"Warning: could not load font info ({font_err}), falling back to Arial")
+                fonts_dir = ""
+                font_name = "Arial"
+
+        subtitle_arg = ff_safe(subtitle_file)
+        fontsdir_opt = f":fontsdir={ff_quote(ff_safe(fonts_dir))}" if fonts_dir else ""
+
+        # Sanitize font name for force_style
+        font_name_safe = (font_name or "Arial").strip()
+        font_name_safe = font_name_safe.replace(',', ' ').replace("'", '').replace('  ', ' ')
+        font_name_safe = font_name_safe.strip()
+
+        force_style = (
+            f"FontName={font_name_safe},"
+            "FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=0,Outline=0,Shadow=0"
+        )
+
+        ffmpeg_filter = f"subtitles={ff_quote(subtitle_arg)}{fontsdir_opt}:force_style={ff_quote(force_style)}"
+
         print_progress("Adding subtitles to video...")
         subprocess.run([
             'ffmpeg', '-i', input_video,
-            '-vf', f"subtitles={subtitle_file}:force_style='FontName=Arial,FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=0,Outline=0,Shadow=0'",
+            '-vf', ffmpeg_filter,
             '-c:a', 'copy',
             output_video,
             '-y'

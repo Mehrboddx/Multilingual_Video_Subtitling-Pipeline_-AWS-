@@ -17,6 +17,7 @@ let dragStartTime = 0;
 let resizeHandle = null;
 let historyStack = [];
 let historyIndex = -1;
+let currentFont = { family: 'Arial', path: null };
 
 // DOM elements
 const videoPlayer = document.getElementById('videoPlayer');
@@ -38,6 +39,8 @@ const redoBtn = document.getElementById('redoBtn');
 const saveBtn = document.getElementById('saveBtn');
 const cancelBtn = document.getElementById('cancelBtn');
 const addSubtitleBtn = document.getElementById('addSubtitleBtn');
+const fontFileInput = document.getElementById('fontFile');
+const fontNameLabel = document.getElementById('fontNameLabel');
 
 // Subtitle overlay
 const subtitleOverlay = document.getElementById('subtitleOverlay');
@@ -64,7 +67,8 @@ const elements = {
   saveBtn, cancelBtn, addSubtitleBtn, subtitleOverlay,
   subtitleTextInput, subtitleStartInput, subtitleEndInput, subtitleDurationInput,
   saveEditBtn, cancelEditBtn, deleteSubtitleBtn,
-  boldBtn, italicBtn, clearFormatBtn
+  boldBtn, italicBtn, clearFormatBtn,
+  fontFileInput, fontNameLabel
 };
 
 for (const [name, element] of Object.entries(elements)) {
@@ -77,6 +81,42 @@ console.log('All DOM elements loaded successfully');
 
 // Initialize - receive data from main process
 console.log('Editor script loaded, waiting for initialization...');
+
+// Set initial font on load
+function applySubtitleFont(family) {
+  const safeFamily = family || 'Arial';
+  document.documentElement.style.setProperty('--subtitle-font', `'${safeFamily}'`);
+  subtitleOverlay.style.fontFamily = `'${safeFamily}', sans-serif`;
+}
+
+applySubtitleFont(currentFont.family);
+
+// Handle custom font upload
+if (fontFileInput) {
+  fontFileInput.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const family = file.name.replace(/\.(ttf|otf)$/i, '') || 'CustomFont';
+    try {
+      const data = await file.arrayBuffer();
+      const fontFace = new FontFace(family, data);
+      await fontFace.load();
+      document.fonts.add(fontFace);
+      currentFont = { family, path: file.path || null };
+      applySubtitleFont(family);
+      if (fontNameLabel) {
+        fontNameLabel.textContent = `Using: ${family}`;
+      }
+      console.log(`Loaded custom font: ${family} (${file.path || 'buffer'})`);
+    } catch (err) {
+      console.error('Failed to load font', err);
+      if (fontNameLabel) {
+        fontNameLabel.textContent = 'Font load failed';
+      }
+    }
+  });
+}
 
 window.electronAPI.onEditorInit((data) => {
   console.log('Editor initializing with data:', data);
@@ -632,7 +672,7 @@ redoBtn.addEventListener('click', () => {
 
 // Save and cancel
 saveBtn.addEventListener('click', () => {
-  window.electronAPI.saveSubtitles(subtitles);
+  window.electronAPI.saveSubtitles({ subtitles, font: currentFont });
 });
 
 cancelBtn.addEventListener('click', () => {

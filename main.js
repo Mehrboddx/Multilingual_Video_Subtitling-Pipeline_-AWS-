@@ -128,6 +128,12 @@ ipcMain.handle('select-output', async (event, inputPath) => {
 ipcMain.handle('process-video', async (event, { inputPath, outputPath, sourceLang, targetLang }) => {
   return new Promise((resolve, reject) => {
     const pythonScript = path.join(__dirname, 'video_processor.py');
+    const fontInfoPath = path.join(app.getPath('userData'), 'font-info.json');
+    try {
+      if (fs.existsSync(fontInfoPath)) fs.unlinkSync(fontInfoPath);
+    } catch (cleanupErr) {
+      console.warn('Could not clear previous font info file:', cleanupErr);
+    }
     
     // Store inputPath in a variable accessible to handlers
     let currentVideoPath = inputPath;
@@ -139,7 +145,7 @@ ipcMain.handle('process-video', async (event, { inputPath, outputPath, sourceLan
       sourceLang,
       targetLang
     ], {
-      env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8', FONT_INFO_PATH: fontInfoPath },
       encoding: 'utf8'
     });
 
@@ -185,7 +191,7 @@ ipcMain.handle('process-video', async (event, { inputPath, outputPath, sourceLan
     });
 
     // Handle subtitle save from editor (persistent handler)
-    const onSubtitlesSaved = (event, subtitles) => {
+    const onSubtitlesSaved = (event, payload) => {
       if (!waitingForEditorConfirmation) {
         console.warn('Received subtitles-saved but not waiting for editor confirmation');
         return;
@@ -195,13 +201,31 @@ ipcMain.handle('process-video', async (event, { inputPath, outputPath, sourceLan
         return;
       }
 
+      const payloadObj = Array.isArray(payload) ? { subtitles: payload } : (payload || {});
+      const subtitleList = payloadObj.subtitles || [];
+      const fontChoice = payloadObj.font;
+
       try {
-        const srtContent = convertToSRT(subtitles);
+        const srtContent = convertToSRT(subtitleList);
         fs.writeFileSync(tempSubtitleFile, srtContent, 'utf-8');
         mainWindow.webContents.send('processing-progress', 'Subtitle edits saved, continuing...');
       } catch (err) {
         console.error('Failed to write SRT file:', err);
         mainWindow.webContents.send('processing-progress', 'Error saving subtitles file');
+      }
+
+      // Stage custom font (if provided) for FFmpeg/libass consumption
+      try {
+        const fontsDir = path.join(app.getPath('userData'), 'fonts');
+        const fontResource = prepareFontResource(fontChoice, fontsDir);
+        if (fontResource) {
+          fs.writeFileSync(fontInfoPath, JSON.stringify(fontResource), 'utf-8');
+          console.log('Font info written for processing:', fontResource);
+        } else if (fs.existsSync(fontInfoPath)) {
+          fs.unlinkSync(fontInfoPath);
+        }
+      } catch (fontErr) {
+        console.error('Failed to persist font info:', fontErr);
       }
 
       // Signal Python to continue
@@ -288,4 +312,28 @@ function formatSRTTime(seconds) {
   const millis = Math.floor((seconds % 1) * 1000);
   
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')},${String(millis).padStart(3, '0')}`;
+}
+
+function ensureDirExists(dirPath) {
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
+  }
+}
+
+function prepareFontResource(font, fontStoreDir) {
+  if (!font || !font.path) return null;
+  try {
+    if (!fs.existsSync(font.path)) {
+      console.warn('Font file missing on disk:', font.path);
+      return null;
+    }
+    ensureDirExists(fontStoreDir);
+    const fontName = font.family || path.basename(font.path, path.extname(font.path));
+    const targetPath = path.join(fontStoreDir, path.basename(font.path));
+    fs.copyFileSync(font.path, targetPath);
+    return { fontName, fontDir: fontStoreDir };
+  } catch (err) {
+    console.error('Failed to prepare font resource:', err);
+    return null;
+  }
 }

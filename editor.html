@@ -13,6 +13,11 @@
     <div class="editor-header">
       <h1>🎬 Subtitle Editor</h1>
       <div class="header-actions">
+        <label class="font-upload" title="Upload a .ttf or .otf font to preview and export with it">
+          <span>Font</span>
+          <input id="fontFile" type="file" accept=".ttf,.otf" />
+        </label>
+        <span id="fontNameLabel" class="font-name">Default: Arial</span>
         <button id="undoBtn" class="btn btn-icon" disabled title="Undo">↶</button>
         <button id="redoBtn" class="btn btn-icon" disabled title="Redo">↷</button>
         <button id="saveBtn" class="btn btn-primary">Save & Export</button>
