@@ -50,6 +50,7 @@
         "to": "video_processor.exe"
       },
       ".env.example",
+      ".env",
       "AWS_SETUP_GUIDE.md",
       "QUICK_START.md"
     ],

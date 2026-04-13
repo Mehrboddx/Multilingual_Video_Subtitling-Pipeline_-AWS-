@@ -1,13 +1,18 @@
 from http import client
 import sys
 import os
+
+# Force UTF-8 encoding BEFORE any other imports
+import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+os.environ['PYTHONIOENCODING'] = 'utf-8'
+
 import subprocess
 import boto3
 import time
 import json
 from pathlib import Path
-
-os.environ['PYTHONIOENCODING'] = 'utf-8'
 
 def get_script_directory():
     """Get the directory where the script/exe is located, works for both dev and packaged."""
@@ -17,6 +22,28 @@ def get_script_directory():
     else:
         # Running as script
         return Path(__file__).resolve().parent
+
+def get_ffmpeg_path():
+    """Get the path to the bundled ffmpeg executable."""
+    script_dir = get_script_directory()
+    
+    # In the Electron app, ffmpeg is in resources/ffmpeg/bin/ffmpeg.exe
+    # When running in dev, it's in ./ffmpeg/bin/ffmpeg.exe
+    possible_paths = [
+        script_dir / 'ffmpeg' / 'bin' / 'ffmpeg.exe',  # Dev environment
+        script_dir.parent / 'ffmpeg' / 'bin' / 'ffmpeg.exe',  # Packaged (one level up)
+        script_dir / '..' / 'ffmpeg' / 'bin' / 'ffmpeg.exe',  # Alternative packaging
+    ]
+    
+    for ffmpeg_path in possible_paths:
+        resolved = ffmpeg_path.resolve()
+        if resolved.exists():
+            print_progress(f"DEBUG - Found ffmpeg at: {resolved}")
+            return str(resolved)
+    
+    # Fallback to system PATH ffmpeg (for dev environments)
+    print_progress("DEBUG - Using system PATH ffmpeg")
+    return 'ffmpeg'
 
 def load_dotenv_simple():
     try:
@@ -185,13 +212,19 @@ def ff_quote(val: str) -> str:
 
 def main():
     if len(sys.argv) != 5:
-        print("ERROR: Invalid arguments. Usage: video_processor.py <input_video> <output_video> <origin_lang> <destination_lang>", file=sys.stderr)
+        try:
+            print("ERROR: Invalid arguments. Usage: video_processor.py <input_video> <output_video> <origin_lang> <destination_lang>", file=sys.stderr, flush=True)
+        except UnicodeEncodeError:
+            sys.stderr.write("ERROR: Invalid arguments\n")
         sys.exit(1)
     
     input_video = sys.argv[1]
     output_video = sys.argv[2]
     origin_lang = sys.argv[3]
     destination_lang = sys.argv[4]
+    
+    # Get the bundled ffmpeg path
+    ffmpeg_cmd = get_ffmpeg_path()
     
     try:
         load_env()
@@ -201,7 +234,7 @@ def main():
         print_progress("Extracting audio from video...")
         output_audio = "temp_audio.mp3"
         subprocess.run([
-            "ffmpeg", "-i", input_video, "-vn", "-acodec", "libmp3lame",
+            ffmpeg_cmd, "-i", input_video, "-vn", "-acodec", "libmp3lame",
             "-b:a", "128k", "-ar", "16000", "-ac", "1", "-y", output_audio
         ], check=True, capture_output=True, text=True, encoding='utf-8', errors='ignore')
         
@@ -504,7 +537,7 @@ def main():
 
         print_progress("Adding subtitles to video...")
         subprocess.run([
-            'ffmpeg', '-i', input_video,
+            ffmpeg_cmd, '-i', input_video,
             '-vf', ffmpeg_filter,
             '-c:a', 'copy',
             output_video,
@@ -552,7 +585,13 @@ def main():
         sys.exit(0)
         
     except Exception as e:
-        print(f"ERROR: {str(e)}", file=sys.stderr)
+        try:
+            error_msg = str(e)
+            print(f"ERROR: {error_msg}", file=sys.stderr, flush=True)
+        except UnicodeEncodeError:
+            # Fallback for encoding errors - replace problematic characters
+            safe_msg = str(e).encode('utf-8', errors='replace').decode('utf-8', errors='replace')
+            print(f"ERROR: {safe_msg}", file=sys.stderr, flush=True)
         sys.exit(1)
 
 if __name__ == "__main__":
